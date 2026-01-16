@@ -6,3 +6,5 @@ add_library(ParexCuda STATIC)
 target_sources(ParexCuda PRIVATE ${ALL_CUDA_FILES})
 
 target_link_libraries(ParexCuda PUBLIC ParexLib)
+
+target_compile_options(ParexCuda PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>)

@@ -5,7 +5,7 @@
 #ifndef RCUT_PARTITION_WRITER_H
 #define RCUT_PARTITION_WRITER_H
 
-#include "../core/partition.h"
+#include "core/partition.h"
 #include <filesystem>
 #include <fstream>
 #include <iostream>

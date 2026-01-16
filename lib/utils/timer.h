@@ -10,11 +10,11 @@
 class Timer {
   std::chrono::time_point<std::chrono::steady_clock, std::chrono::duration<double>> startTime;
 public:
-  void start();
-  double timeSeconds();
-  long long timeMillis();
-  long long timeMicros();
-  long long timeNanos();
+    inline void start();
+    inline double timeSeconds();
+    inline long long timeMillis();
+    inline long long timeMicros();
+    inline long long timeNanos();
 };
 
 void Timer::start() {

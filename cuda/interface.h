@@ -5,6 +5,6 @@
 #ifndef PAREX_INTERFACE_H
 #define PAREX_INTERFACE_H
 
-int cudaFunction();
+int testCuda();
 
 #endif //PAREX_INTERFACE_H

@@ -22,28 +22,28 @@ int main() {
 
     Timer t;
     t.start();
-//    auto ed = expanderDecomposition(G);
-//    auto timeSpent = t.timeSeconds();
-//
-//    std::cout << "\nFinished:  (" << timeSpent << "s)\n-> "
-//              << ed.numClusters() << " clusters with " << ed.getNumCutEdges() << " crossing edges" << std::endl;
+    auto ed = expanderDecomposition(G);
+    auto timeSpent = t.timeSeconds();
+
+    std::cout << "\nFinished:  (" << timeSpent << "s)\n-> "
+              << ed.numClusters() << " clusters with " << ed.getNumCutEdges() << " crossing edges" << std::endl;
 
 //    writePartition(ed, "uk");
 
-    ExpanderHierarchy eh{&G};
-    eh.build();
-
-    auto timeSpent = t.timeSeconds();
-
-    std::cout << "\nFinished:  (" << timeSpent << "s)" << std::endl;
-
-    t.start();
-    NormalizedCut nc{&eh};
-    Partition kPart = nc.compute(16);
-
-    timeSpent = t.timeSeconds();
-
-    frac_t ncVal = compute_normalized_cut(kPart);
-    WARN("Checked NC:   \t" << ncVal << "\t\t[" << timeSpent << "s]");
+//    ExpanderHierarchy eh{&G};
+//    eh.build();
+//
+//    auto timeSpent = t.timeSeconds();
+//
+//    std::cout << "\nFinished:  (" << timeSpent << "s)" << std::endl;
+//
+//    t.start();
+//    NormalizedCut nc{&eh};
+//    Partition kPart = nc.compute(16);
+//
+//    timeSpent = t.timeSeconds();
+//
+//    frac_t ncVal = compute_normalized_cut(kPart);
+//    WARN("Checked NC:   \t" << ncVal << "\t\t[" << timeSpent << "s]");
 
 }

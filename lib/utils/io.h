@@ -5,7 +5,7 @@
 #ifndef RCUT_IO_H
 #define RCUT_IO_H
 
-#include "../core/graph.h"
+#include "core/graph.h"
 #include <fstream>
 #include <iostream>
 #include <sstream>

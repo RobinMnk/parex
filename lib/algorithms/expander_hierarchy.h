@@ -7,7 +7,7 @@
 
 #include "expander_decomposition.h"
 
-#include "../utils/timer.h"
+#include "utils/timer.h"
 #include <iostream>
 
 class ExpanderHierarchy {
