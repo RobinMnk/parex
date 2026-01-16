@@ -3,7 +3,6 @@ project(Parex LANGUAGES CXX CUDA)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CUDA_STANDARD 20)
-#set(CMAKE_CUDA_ARCHITECTURES 75)
 
 add_subdirectory(lib)
 add_subdirectory(cuda)

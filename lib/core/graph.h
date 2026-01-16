@@ -127,7 +127,7 @@ public:
     [[nodiscard]] Graph finalize() const;
 };
 
-Graph DynamicGraph::finalize() const {
+inline Graph DynamicGraph::finalize() const {
     if(edges.empty()) return {};
     std::vector<Edge> fullEdges(2 * numEdges);
     std::vector<EdgeIx> rg(numNodes + 1);

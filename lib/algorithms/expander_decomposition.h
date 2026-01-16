@@ -34,7 +34,8 @@ Partition expanderDecomposition(Graph& graph, const Config& config = {}) {
     RandomWalk walk{graph.numNodes};
     Partition decomposition{&graph};
 
-    testCuda();
+    CudaDeviceManager devGraph;
+    devGraph.uploadGraph(graph);
 
     std::vector<NodeIx> active, next(decomposition.numClusters());
     std::iota(next.begin(), next.end(), 0);

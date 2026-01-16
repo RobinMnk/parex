@@ -2,11 +2,10 @@
 // Created by robin on 14.01.2026.
 //
 
+#include "interface.h"
+
 #include <thrust/device_vector.h>
 #include <vector>
-
-using NodeIx = unsigned int;
-using EdgeIx = unsigned int;
 
 struct SwapPair {
     EdgeIx i;
@@ -32,16 +31,16 @@ struct DevGraph {
     SwapPair* swapBuffer;
     NodeUpdate* nodeUpdateBuffer;
 
-    __device__
-    void handleSwaps(NodeIx idx) const {
+    __host__ __device__
+    inline void handleSwaps(NodeIx idx) const {
         SwapPair pair = swapBuffer[idx];
         NodeIx temp = neighbors[pair.i];
         neighbors[pair.i] = neighbors[pair.j];
         neighbors[pair.j] = temp;
     }
 
-    __device__
-    void handleActiveDegrees(NodeIx idx) const {
+    __host__ __device__
+    inline void handleActiveDegrees(NodeIx idx) const {
         NodeUpdate pair = nodeUpdateBuffer[idx];
         active_degrees[pair.nix] -= pair.diff;
     }
@@ -83,10 +82,10 @@ void applyGraphUpdates(DevGraph& gr, const std::vector<SwapPair>& swaps, const s
     }
 }
 
-class DevGraphManager {
+class CudaDeviceManager::Impl {
 private:
-    NodeIx n;
-    EdgeIx m;
+    NodeIx n{0};
+    EdgeIx m{0};
 
     // These own the actual GPU memory
     thrust::device_vector<NodeIx> neighbors;
@@ -97,16 +96,7 @@ private:
     thrust::device_vector<SwapPair> swapBuffer;
     thrust::device_vector<NodeUpdate> nodeUpdateBuffer;
 
-
 public:
-    DevGraphManager(NodeIx numNodes, EdgeIx numEdges, NodeIx maxUpdateSize) : n(numNodes), m(numEdges) {
-        neighbors.resize(m);
-        ranges.resize(n + 1);
-        active_degrees.resize(n);
-
-        swapBuffer.resize(maxUpdateSize);
-        nodeUpdateBuffer.resize(maxUpdateSize);
-    }
 
     DevGraph getDeviceView() {
         return DevGraph {
@@ -121,11 +111,28 @@ public:
     }
 
     // Helper to upload initial data from CPU
-    void uploadData(const std::vector<NodeIx>& h_neighbors, const std::vector<NodeIx>& h_ranges) {
-        neighbors = h_neighbors;
-        ranges = h_ranges;
-        // ... etc
+    void uploadGraph(const Graph& graph) {
+        n = graph.numNodes;
+        m = graph.numEdges;
+        neighbors.resize(m);
+        ranges.resize(n + 1);
+        active_degrees.resize(n);
+        swapBuffer.resize(n);
+        nodeUpdateBuffer.resize(m);
+
+        neighbors = graph.edges;
+        ranges = graph.ranges;
+
+        std::cout << "Copied Graph to GPU. \t" << neighbors.size() / 2 << " edges copied" << std::endl;
+
     }
 };
+
+CudaDeviceManager::CudaDeviceManager() : impl(std::make_unique<Impl>()) {}
+
+CudaDeviceManager::~CudaDeviceManager() = default;
+
+void CudaDeviceManager::uploadGraph(const Graph &graph) { impl->uploadGraph(graph); }
+
 
 
