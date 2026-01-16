@@ -1,4 +1,4 @@
-#include "lib/core/normalized_cut.h"
+#include "lib/algorithms/normalized_cut.h"
 #include "lib/utils/io.h"
 #include "lib/utils/timer.h"
 
@@ -16,7 +16,7 @@ int main() {
 
     std::cout << "Reading input graph: ";
     std::cout.flush();
-    DynamicGraph G_dyn = readDynGraph("../graphs/coPapersCiteseer.mtx");
+    DynamicGraph G_dyn = readDynGraph("../graphs/uk.mtx");
     Graph G = G_dyn.finalize();
     std::cout << "loaded " << G.numNodes << " nodes and " << G.numEdges << " edges\nBegin Expander Decomposition" << std::endl;
 

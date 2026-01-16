@@ -7,6 +7,7 @@
 
 #include "partition.h"
 #include "random_walk.h"
+#include "cuda/interface.h"
 #include <numeric>
 
 struct Strategy {
@@ -32,6 +33,8 @@ template<Strategy strategy = {}>
 Partition expanderDecomposition(Graph& graph, const Config& config = {}) {
     RandomWalk walk{graph.numNodes};
     Partition decomposition{&graph};
+
+    cudaFunction();
 
     std::vector<NodeIx> active, next(decomposition.numClusters());
     std::iota(next.begin(), next.end(), 0);

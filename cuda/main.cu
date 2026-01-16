@@ -5,21 +5,24 @@
 #include <thrust/copy.h>
 #include <thrust/execution_policy.h>
 
-#include "timer.h"
+#include "interface.h"
 
 using dVec = thrust::device_vector<float>;
 
 // Declare the CUDA function
-cudaError_t randomWalkStep(int blocksPerGrid, int threadsPerBlock, const unsigned int* activeNodeDegrees, const unsigned int* edges, const unsigned int* sl);
+//cudaError_t randomWalkStep(int blocksPerGrid, int threadsPerBlock);
 
-int main() {
-    int N = 100000000;
+int cudaFunction() {
+//    int N = 100000000;
 
 
-    cudaError_t err = randomWalkStep(256, 1024);
-    if (err != cudaSuccess) {
-        std::cerr << "CUDA error during kernel launch: " << cudaGetErrorString(err) << std::endl;
-    }
+        std::cout << "Hello from CUDA!! " << std::endl;
+
+
+//    cudaError_t err = randomWalkStep(256, 1024);
+//    if (err != cudaSuccess) {
+//        std::cerr << "CUDA error during kernel launch: " << cudaGetErrorString(err) << std::endl;
+//    }
 
 
 //    Timer t;
