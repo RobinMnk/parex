@@ -40,33 +40,33 @@ struct NormalDistributionFunctor {
 __global__
 void lazyRandomWalkKernel(
         NodeIx numNodes,
-        const NodeIx* ranges,
-        const NodeIx* neighbors,
-        const EdgeIx* degrees,
-        const frac_t* old_dist,
-        frac_t* dist,
+        const NodeIx* __restrict__ ranges,
+        const NodeIx* __restrict__ neighbors,
+        const EdgeIx* __restrict__ degrees,
+        const frac_t* __restrict__ old_dist,
+        frac_t* __restrict__ dist,
         frac_t stay_weight,
         frac_t move_weight)
 {
-    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    NodeIx i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= numNodes) return;
 
-    NodeIx start = ranges[i];
-    NodeIx end = ranges[i+1];
-    frac_t sum = 0.0f;
+    // Prefetch ranges to registers
+    const NodeIx start = ranges[i];
+    const NodeIx end   = ranges[i+1];
 
-    // Fused Pre-divide and Sum
+    frac_t incoming_sum = 0.0f;
+
+    // The #pragma unroll hint tells the compiler to optimize the loop
+    // for small segments, which are common in many graphs.
+#pragma unroll 4
     for (NodeIx j = start; j < end; ++j) {
-        NodeIx neighbor = neighbors[j];
-        auto deg = static_cast<frac_t>(degrees[neighbor]);
-//        if (deg > 0) {
-            // __ldg tells the GPU to use the specialized read-only cache
-            sum += (__ldg(&old_dist[neighbor]) / deg);
-//        }
+        const NodeIx neighbor = neighbors[j];
+        const EdgeIx deg = degrees[neighbor];
+        incoming_sum += (__ldg(&old_dist[neighbor]) / static_cast<frac_t>(deg));
     }
 
-    // Fused Mix
-    dist[i] = (sum * move_weight) + (old_dist[i] * stay_weight);
+    dist[i] = (incoming_sum * move_weight) + (old_dist[i] * stay_weight);
 }
 
 class RandomWalkManager {
