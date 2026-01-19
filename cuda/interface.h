@@ -7,6 +7,15 @@
 
 #include "core/graph.h"
 
+struct SwapPair {
+    EdgeIx i, j;
+};
+
+struct NodeUpdate {
+    NodeIx nix;
+    EdgeIx diff;
+};
+
 class CudaDeviceManager {
 public:
     CudaDeviceManager();
@@ -16,6 +25,9 @@ public:
     CudaDeviceManager& operator=(const CudaDeviceManager&) = delete;
 
     void uploadGraph(const Graph& graph);
+    Graph downloadGraph();
+
+    void applyGraphUpdates(const std::vector<SwapPair>& swaps, const std::vector<NodeUpdate>& updates);
 
 private:
     struct Impl;

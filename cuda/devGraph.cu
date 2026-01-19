@@ -7,16 +7,6 @@
 #include <thrust/device_vector.h>
 #include <vector>
 
-struct SwapPair {
-    EdgeIx i;
-    EdgeIx j;
-};
-
-struct NodeUpdate {
-    NodeIx nix;
-    EdgeIx diff;
-};
-
 // Device Struct
 struct DevGraph {
     const NodeIx numNodes;
@@ -49,13 +39,13 @@ struct DevGraph {
 __global__
 void swapKernel(DevGraph gr, NodeIx numSwaps) {
     NodeIx idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if(idx < numSwaps) gr.handleSwaps(numSwaps);
+    if(idx < numSwaps) gr.handleSwaps(idx);
 }
 
 __global__
 void degreeKernel(DevGraph gr, NodeIx numUpdates) {
     NodeIx idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < numUpdates) gr.handleActiveDegrees(numUpdates);
+    if (idx < numUpdates) gr.handleActiveDegrees(idx);
 }
 
 template<typename T>
@@ -63,23 +53,6 @@ inline void copyToDevice(const std::vector<T>& elements, T* devTarget, cudaStrea
     cudaMemcpyAsync(
         devTarget, elements.data(), elements.size() * sizeof(T), cudaMemcpyHostToDevice, stream
     );
-}
-
-void applyGraphUpdates(DevGraph& gr, const std::vector<SwapPair>& swaps, const std::vector<NodeUpdate>& updates, cudaStream_t stream) {
-    int threads = 256;
-    if (!swaps.empty()) {
-        copyToDevice(swaps, gr.swapBuffer, stream);
-        auto elements = static_cast<NodeIx>(swaps.size());
-        size_t blocks = (elements + threads - 1) / threads;
-        swapKernel<<<blocks, threads, 0, stream>>>(gr, elements);
-    }
-
-    if (!updates.empty()) {
-        copyToDevice(updates, gr.nodeUpdateBuffer, stream);
-        auto elements = static_cast<NodeIx>(updates.size());
-        size_t blocks = (elements + threads - 1) / threads;
-        degreeKernel<<<blocks, threads, 0, stream>>>(gr, elements);
-    }
 }
 
 class CudaDeviceManager::Impl {
@@ -97,7 +70,6 @@ private:
     thrust::device_vector<NodeUpdate> nodeUpdateBuffer;
 
 public:
-
     DevGraph getDeviceView() {
         return DevGraph {
                 n,
@@ -110,21 +82,52 @@ public:
         };
     }
 
-    // Helper to upload initial data from CPU
     void uploadGraph(const Graph& graph) {
         n = graph.numNodes;
         m = graph.numEdges;
-        neighbors.resize(m);
-        ranges.resize(n + 1);
+        neighbors = graph.edges;
+        ranges = graph.ranges;
         active_degrees.resize(n);
         swapBuffer.resize(n);
         nodeUpdateBuffer.resize(m);
 
-        neighbors = graph.edges;
-        ranges = graph.ranges;
-
         std::cout << "Copied Graph to GPU. \t" << neighbors.size() / 2 << " edges copied" << std::endl;
+    }
 
+    void applyGraphUpdates(const std::vector<SwapPair>& swaps, const std::vector<NodeUpdate>& updates) {
+        DevGraph device = getDeviceView();
+        int threads = 256;
+        if (!swaps.empty()) {
+            copyToDevice(swaps, device.swapBuffer, nullptr);
+            auto elements = static_cast<NodeIx>(swaps.size());
+            size_t blocks = (elements + threads - 1) / threads;
+            swapKernel<<<blocks, threads, 0, nullptr>>>(device, elements);
+
+            // Check if the launch itself was valid
+            cudaError_t err = cudaGetLastError();
+            if (err != cudaSuccess) {
+                printf("Kernel Launch Error: %s\n", cudaGetErrorString(err));
+            }
+        }
+
+        if (!updates.empty()) {
+            copyToDevice(updates, device.nodeUpdateBuffer, nullptr);
+            auto elements = static_cast<NodeIx>(updates.size());
+            size_t blocks = (elements + threads - 1) / threads;
+            degreeKernel<<<blocks, threads, 0, nullptr>>>(device, elements);
+        }
+
+        cudaError_t err = cudaStreamSynchronize(nullptr);
+        if (err != cudaSuccess) {
+            fprintf(stderr, "GPU Error: %s\n", cudaGetErrorString(err));
+        }
+    }
+
+    Graph downloadGraph() {
+        Graph g(n, m);
+        thrust::copy(neighbors.begin(), neighbors.end(), g.edges.begin());
+        thrust::copy(ranges.begin(), ranges.end(), g.ranges.begin());
+        return g;
     }
 };
 
@@ -133,6 +136,12 @@ CudaDeviceManager::CudaDeviceManager() : impl(std::make_unique<Impl>()) {}
 CudaDeviceManager::~CudaDeviceManager() = default;
 
 void CudaDeviceManager::uploadGraph(const Graph &graph) { impl->uploadGraph(graph); }
+
+Graph CudaDeviceManager::downloadGraph() { return impl->downloadGraph(); }
+
+void CudaDeviceManager::applyGraphUpdates(const std::vector<SwapPair>& swaps, const std::vector<NodeUpdate>& updates) {
+    impl->applyGraphUpdates(swaps, updates);
+}
 
 
 

@@ -39,6 +39,8 @@ public:
 
     Graph() : edges{}, ranges{}, weights{}, numNodes{0}, numEdges{0} { }
 
+    Graph(NodeIx n, EdgeIx m) : edges(2 * m), ranges(n + 1), weights(2 * m, 1), numNodes{n}, numEdges{m} { }
+
     Graph(std::vector<NodeIx>&& ed, std::vector<EdgeIx>&& rg, NodeIx nNodes, EdgeIx nEdges) :
             edges(std::move(ed)), ranges(std::move(rg)), weights(2 * nEdges, 1), numNodes{nNodes}, numEdges{nEdges} {
     }
@@ -85,6 +87,8 @@ public:
     [[nodiscard]] inline EdgeIx degree(NodeIx node) const {
         return static_cast<EdgeIx>(std::distance(nbegin(node), nend(node)));
     }
+
+    bool operator==(const Graph& other) const = default;
 };
 
 class DynamicGraph {
