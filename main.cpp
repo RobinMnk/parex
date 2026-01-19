@@ -11,15 +11,9 @@ void checkBuildMode() {
     #endif
 }
 
-void test() {
-    std::cout << "Reading input graph: ";
-    std::cout.flush();
-    DynamicGraph G_dyn = readDynGraph("../graphs/uk.mtx");
-    Graph G = G_dyn.finalize();
-    std::cout << "loaded " << G.numNodes << " nodes and " << G.numEdges << " edges\nBegin Expander Decomposition" << std::endl;
-
+void test(Graph& G) {
     CudaDeviceManager devGraph;
-    devGraph.uploadGraph(G);
+    devGraph.initialize(G);
 
 //    std::vector<SwapPair> swaps;
 //    std::vector<NodeUpdate> updates;
@@ -43,17 +37,41 @@ void test() {
     std::cout << (G == G2) << std::endl;
 }
 
+void test2(Graph& G) {
+    CudaDeviceManager cuda;
+    cuda.initialize(G);
+
+    auto x = cuda.readRandomWalkValues();
+
+    for(NodeIx nix = 0; nix < 5; nix++) {
+        std::cout << x[nix] << std::endl;
+    }
+
+    std::cout << std::endl;
+    cuda.iterateRandomWalk();
+
+    x = cuda.readRandomWalkValues();
+    for(NodeIx nix = 0; nix < 5; nix++) {
+        std::cout << x[nix] << std::endl;
+    }
+
+
+    Graph G2 = cuda.downloadGraph();
+    std::cout << (G == G2) << std::endl;
+}
+
 int main() {
     checkBuildMode();
-    test();
-
-    return 1;
 
     std::cout << "Reading input graph: ";
     std::cout.flush();
     DynamicGraph G_dyn = readDynGraph("../graphs/uk.mtx");
     Graph G = G_dyn.finalize();
     std::cout << "loaded " << G.numNodes << " nodes and " << G.numEdges << " edges\nBegin Expander Decomposition" << std::endl;
+
+    test2(G);
+
+    return 1;
 
     Timer t;
     t.start();

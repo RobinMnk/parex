@@ -16,14 +16,7 @@ inline void DevGraph::handleActiveDegrees(NodeIx idx) const {
     active_degrees[pair.nix] -= pair.diff;
 }
 
-__global__
-void deactivateEdgeKernel(DevGraph gr, EdgeIx numEdgeDeletions) {
-    NodeIx idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if(idx < numEdgeDeletions) gr.deactivateEdge(idx);
-}
-
-__global__
-void degreeKernel(DevGraph gr, NodeIx numUpdates) {
-    NodeIx idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < numUpdates) gr.handleActiveDegrees(idx);
-}
+//__host__ __device__
+//inline void RandomWalkManager::computeNodeVal(NodeIx idx, const EdgeIx* active_degrees) const {
+//    node_val[idx] = old_dist[idx] / active_degrees[idx];
+//}

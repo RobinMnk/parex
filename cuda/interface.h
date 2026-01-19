@@ -20,10 +20,13 @@ public:
     CudaDeviceManager(const CudaDeviceManager&) = delete;
     CudaDeviceManager& operator=(const CudaDeviceManager&) = delete;
 
-    void uploadGraph(const Graph& graph);
+    void initialize(const Graph& graph);
     Graph downloadGraph();
 
-    void applyGraphUpdates(const std::vector<EdgeIx>& edgeDeletions, const std::vector<NodeUpdate>& updates);
+    void iterateRandomWalk();
+    std::vector<frac_t> readRandomWalkValues();
+
+//    void applyGraphUpdates(const std::vector<EdgeIx>& edgeDeletions, const std::vector<NodeUpdate>& updates);
 
 private:
     struct Impl;

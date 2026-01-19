@@ -24,4 +24,6 @@ using EdgeIx        = unsigned int;
 using EdgeWeight    = unsigned int;
 using frac_t        = double;
 
+const int threads = 256;
+
 #endif //RCUT_DEFINITIONS_H

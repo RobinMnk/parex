@@ -17,42 +17,49 @@
 #include <thrust/device_vector.h>
 #include <thrust/iterator/permutation_iterator.h>
 
+const unsigned int seed{0};
+
 struct NormalDistributionFunctor {
-    unsigned int seed{0};
+    unsigned int base_seed;
+
+    // Use a constructor to pass a real-time seed
+    explicit NormalDistributionFunctor(unsigned int s) : base_seed(s) {}
 
     __host__ __device__
     frac_t operator()(const NodeIx idx) const {
-        thrust::default_random_engine rng(seed);
-        thrust::normal_distribution<float> dist;
+        thrust::default_random_engine rng(base_seed);
+        thrust::normal_distribution<frac_t> dist;
         rng.discard(idx);
         return dist(rng);
     }
 };
 
-class DevRandomWalk {
+class RandomWalkManager {
     thrust::device_vector<frac_t> dist;
     thrust::device_vector<frac_t> old_dist;
     thrust::device_vector<frac_t> node_val;
 
-    // Buffers
-    int numNodes;
+    NodeIx numNodes;
     void* d_temp_storage = nullptr;
     size_t temp_storage_bytes = 0;
 
 public:
-    explicit DevRandomWalk(DevGraph gr, NodeIx n) : dist(n), old_dist(n), node_val(n), numNodes(static_cast<int>(n)) {
+    explicit RandomWalkManager(DevGraph gr, NodeIx n) : dist(n), old_dist(n), node_val(n), numNodes(n) {
+        initRandomWalk(seed);
         prepare_cub(gr, static_cast<int>(n));
-        initRandomWalk();
     }
 
-    ~DevRandomWalk() {
+    ~RandomWalkManager() {
         if (d_temp_storage) cudaFree(d_temp_storage);
     }
 
     void step(DevGraph gr, cudaStream_t stream = nullptr) {
+        old_dist.swap(dist);
+
         thrust::transform(thrust::cuda::par.on(stream),
                           old_dist.begin(), old_dist.end(),
-                          gr.active_degrees, node_val.begin(),
+                          gr.active_degrees,
+                          node_val.begin(),
                           thrust::divides<frac_t>());
 
         frac_t* raw_node_vals = thrust::raw_pointer_cast(node_val.data());
@@ -65,13 +72,17 @@ public:
                 temp_storage_bytes,
                 v_mapped_iter,
                 raw_dist_out,
-                numNodes,
+                static_cast<int>(numNodes),
                 gr.ranges,
                 gr.ranges + 1,
                 stream
         );
+    }
 
-        old_dist.swap(dist);
+    std::vector<frac_t> readRandomWalkValues() {
+        std::vector<frac_t> rwVals(numNodes);
+        thrust::copy(dist.begin(), dist.end(), rwVals.begin());
+        return rwVals;
     }
 
 private:
@@ -100,11 +111,11 @@ private:
         cudaMalloc(&d_temp_storage, temp_storage_bytes);
     }
 
-    void initRandomWalk() {
+    void initRandomWalk(unsigned int s) {
         thrust::transform(thrust::make_counting_iterator<NodeIx>(0),
-                          thrust::make_counting_iterator<NodeIx>(numNodes),
+                          thrust::make_counting_iterator(numNodes),
                           dist.begin(),
-                          NormalDistributionFunctor()
+                          NormalDistributionFunctor(s)
         );
     }
 };
