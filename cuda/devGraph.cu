@@ -13,20 +13,18 @@ struct DevGraph {
     const EdgeIx numEdges;
 
     // Graph
-    NodeIx* neighbors;          // size: numEdges
+    NodeIx* neighbors;          // size: 2 * numEdges
     NodeIx* ranges;             // size: numNodes+1
     EdgeIx* active_degrees;     // size: numNodes
 
     // Buffers for Updates
-    SwapPair* swapBuffer;
+    EdgeIx* edgeDeletionBuffer;
     NodeUpdate* nodeUpdateBuffer;
 
     __host__ __device__
-    inline void handleSwaps(NodeIx idx) const {
-        SwapPair pair = swapBuffer[idx];
-        NodeIx temp = neighbors[pair.i];
-        neighbors[pair.i] = neighbors[pair.j];
-        neighbors[pair.j] = temp;
+    inline void deactivateEdge(EdgeIx idx) const {
+        // to deactivate an edge we "redirect it" to point to a garbage-node with index 2 * numEdges
+        neighbors[idx] = 2 * numEdges;
     }
 
     __host__ __device__
@@ -37,9 +35,9 @@ struct DevGraph {
 };
 
 __global__
-void swapKernel(DevGraph gr, NodeIx numSwaps) {
+void deactivateEdgeKernel(DevGraph gr, EdgeIx numEdgeDeletions) {
     NodeIx idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if(idx < numSwaps) gr.handleSwaps(idx);
+    if(idx < numEdgeDeletions) gr.deactivateEdge(idx);
 }
 
 __global__
@@ -60,13 +58,13 @@ private:
     NodeIx n{0};
     EdgeIx m{0};
 
-    // These own the actual GPU memory
+    // Graph and Partition
     thrust::device_vector<NodeIx> neighbors;
     thrust::device_vector<NodeIx> ranges;
     thrust::device_vector<EdgeIx> active_degrees;
 
     // Update buffers
-    thrust::device_vector<SwapPair> swapBuffer;
+    thrust::device_vector<EdgeIx> edgeDeletionBuffer;
     thrust::device_vector<NodeUpdate> nodeUpdateBuffer;
 
 public:
@@ -77,7 +75,7 @@ public:
                 thrust::raw_pointer_cast(neighbors.data()),
                 thrust::raw_pointer_cast(ranges.data()),
                 thrust::raw_pointer_cast(active_degrees.data()),
-                thrust::raw_pointer_cast(swapBuffer.data()),
+                thrust::raw_pointer_cast(edgeDeletionBuffer.data()),
                 thrust::raw_pointer_cast(nodeUpdateBuffer.data())
         };
     }
@@ -88,20 +86,20 @@ public:
         neighbors = graph.edges;
         ranges = graph.ranges;
         active_degrees.resize(n);
-        swapBuffer.resize(n);
-        nodeUpdateBuffer.resize(m);
+        edgeDeletionBuffer.resize(m);
+        nodeUpdateBuffer.resize(n);
 
         std::cout << "Copied Graph to GPU. \t" << neighbors.size() / 2 << " edges copied" << std::endl;
     }
 
-    void applyGraphUpdates(const std::vector<SwapPair>& swaps, const std::vector<NodeUpdate>& updates) {
+    void applyGraphUpdates(const std::vector<EdgeIx>& edgeDeletions, const std::vector<NodeUpdate>& updates) {
         DevGraph device = getDeviceView();
         int threads = 256;
-        if (!swaps.empty()) {
-            copyToDevice(swaps, device.swapBuffer, nullptr);
-            auto elements = static_cast<NodeIx>(swaps.size());
+        if (!edgeDeletions.empty()) {
+            copyToDevice(edgeDeletions, device.edgeDeletionBuffer, nullptr);
+            auto elements = static_cast<NodeIx>(edgeDeletions.size());
             size_t blocks = (elements + threads - 1) / threads;
-            swapKernel<<<blocks, threads, 0, nullptr>>>(device, elements);
+            deactivateEdgeKernel<<<blocks, threads, 0, nullptr>>>(device, elements);
 
             // Check if the launch itself was valid
             cudaError_t err = cudaGetLastError();
@@ -139,8 +137,8 @@ void CudaDeviceManager::uploadGraph(const Graph &graph) { impl->uploadGraph(grap
 
 Graph CudaDeviceManager::downloadGraph() { return impl->downloadGraph(); }
 
-void CudaDeviceManager::applyGraphUpdates(const std::vector<SwapPair>& swaps, const std::vector<NodeUpdate>& updates) {
-    impl->applyGraphUpdates(swaps, updates);
+void CudaDeviceManager::applyGraphUpdates(const std::vector<EdgeIx>& edgeDeletions, const std::vector<NodeUpdate>& updates) {
+    impl->applyGraphUpdates(edgeDeletions, updates);
 }
 
 

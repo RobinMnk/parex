@@ -28,9 +28,9 @@ struct Edge {
 
 class Graph {
 public:
-    std::vector<NodeIx> edges;
-    std::vector<EdgeIx> ranges;
-    std::vector<EdgeWeight> weights;
+    std::vector<NodeIx> edges;          // size: 2 * numEdges
+    std::vector<EdgeIx> ranges;         // size: numNodes + 1
+    std::vector<EdgeWeight> weights;    // size: numNodes
 //    std::vector<EdgeIx> map; // in an undirected graph: maps edge in one direction to its counterpart edge
 //    std::vector<EdgeIx> edgeToNode;
 
