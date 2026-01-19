@@ -37,6 +37,38 @@ struct NormalDistributionFunctor {
     }
 };
 
+__global__
+void lazyRandomWalkKernel(
+        NodeIx numNodes,
+        const NodeIx* ranges,
+        const NodeIx* neighbors,
+        const EdgeIx* degrees,
+        const frac_t* old_dist,
+        frac_t* dist,
+        frac_t stay_weight,
+        frac_t move_weight)
+{
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= numNodes) return;
+
+    NodeIx start = ranges[i];
+    NodeIx end = ranges[i+1];
+    frac_t sum = 0.0f;
+
+    // Fused Pre-divide and Sum
+    for (NodeIx j = start; j < end; ++j) {
+        NodeIx neighbor = neighbors[j];
+        auto deg = static_cast<frac_t>(degrees[neighbor]);
+//        if (deg > 0) {
+            // __ldg tells the GPU to use the specialized read-only cache
+            sum += (__ldg(&old_dist[neighbor]) / deg);
+//        }
+    }
+
+    // Fused Mix
+    dist[i] = (sum * move_weight) + (old_dist[i] * stay_weight);
+}
+
 class RandomWalkManager {
     thrust::device_vector<frac_t> dist;
     thrust::device_vector<frac_t> old_dist;
@@ -56,7 +88,25 @@ public:
         if (d_temp_storage) cudaFree(d_temp_storage);
     }
 
-    void step(DevGraph gr, cudaStream_t stream = nullptr) {
+    void step(const DevGraph gr, cudaStream_t stream = nullptr) {
+        old_dist.swap(dist);
+
+        int threadsPerBlock = 256;
+        unsigned int blocksPerGrid = (numNodes + threadsPerBlock - 1) / threadsPerBlock;
+
+        lazyRandomWalkKernel<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(
+                numNodes,
+                gr.ranges,
+                gr.neighbors,
+                gr.active_degrees,
+                thrust::raw_pointer_cast(old_dist.data()),
+                thrust::raw_pointer_cast(dist.data()),
+                rw_stay,
+                1.0f - rw_stay
+        );
+    }
+
+    void stepSlow(DevGraph gr, cudaStream_t stream = nullptr) {
         old_dist.swap(dist);
 
         const frac_t stay_weight = rw_stay;
@@ -77,6 +127,7 @@ public:
 
         auto v_mapped_iter = thrust::make_permutation_iterator(raw_node_vals, gr.neighbors);
 
+        // dist = sum_neighbors node_val
         cub::DeviceSegmentedReduce::Sum(
                 d_temp_storage,
                 temp_storage_bytes,
@@ -88,6 +139,7 @@ public:
                 stream
         );
 
+        // dist += (1 - rw_stay) * old_dist
         thrust::transform(thrust::cuda::par.on(stream),
                           dist.begin(), dist.end(),
                           old_dist.begin(),

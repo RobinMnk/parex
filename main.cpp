@@ -50,8 +50,16 @@ void test2(Graph& G) {
     std::cout << "GPU [0] = " << x[0] << std::endl;
     std::cout << "CPU [0] = " << rw.values()[0] << "\n" << std::endl;
 
-    cuda.iterateRandomWalk();
+    Timer t;
+    t.start();
     rw.iterate(part, {0});
+    auto millis = t.timeNanos();
+    std::cout << "CPU Random Walk time: " << millis << "ms" << std::endl;
+
+    t.start();
+    cuda.iterateRandomWalk();
+    millis = t.timeNanos();
+    std::cout << "GPU Random Walk time: " << millis << "ms" << std::endl;
 
     auto y = cuda.readRandomWalkValues();
     auto z = rw.values();
