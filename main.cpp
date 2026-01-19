@@ -43,16 +43,26 @@ void test2(Graph& G) {
 
     auto x = cuda.readRandomWalkValues();
 
-    for(NodeIx nix = 0; nix < 5; nix++) {
-        std::cout << x[nix] << std::endl;
-    }
+    RandomWalk rw(G.numNodes);
+    rw.setData(x);
+    Partition part(&G);
 
-    std::cout << std::endl;
+    std::cout << "GPU [0] = " << x[0] << std::endl;
+    std::cout << "CPU [0] = " << rw.values()[0] << "\n" << std::endl;
+
     cuda.iterateRandomWalk();
+    rw.iterate(part, {0});
 
-    x = cuda.readRandomWalkValues();
-    for(NodeIx nix = 0; nix < 5; nix++) {
-        std::cout << x[nix] << std::endl;
+    auto y = cuda.readRandomWalkValues();
+    auto z = rw.values();
+
+    std::cout << "GPU [0] = " << y[0] << std::endl;
+    std::cout << "CPU [0] = " << z[0] << "\n" << std::endl;
+
+    for(NodeIx nix = 0; nix < G.numNodes; nix++) {
+        if(std::abs(y[nix] - z[nix]) > 0.00001) {
+            std::cerr << "ERROR at nix " << nix << std::endl;
+        }
     }
 
 
@@ -65,7 +75,7 @@ int main() {
 
     std::cout << "Reading input graph: ";
     std::cout.flush();
-    DynamicGraph G_dyn = readDynGraph("../graphs/uk.mtx");
+    DynamicGraph G_dyn = readDynGraph("../graphs/coPapersCiteseer.mtx");
     Graph G = G_dyn.finalize();
     std::cout << "loaded " << G.numNodes << " nodes and " << G.numEdges << " edges\nBegin Expander Decomposition" << std::endl;
 

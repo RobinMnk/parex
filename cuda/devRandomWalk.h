@@ -9,15 +9,18 @@
 #include <thrust/transform.h>
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/random.h>
+#include <thrust/iterator/permutation_iterator.h>
+
 #include <curand_kernel.h>
+
+#include <cub/cub.cuh>
+
 
 #include "devGraph.h"
 
-#include <cub/cub.cuh>
-#include <thrust/device_vector.h>
-#include <thrust/iterator/permutation_iterator.h>
 
 const unsigned int seed{0};
+const frac_t rw_stay = 0.1;
 
 struct NormalDistributionFunctor {
     unsigned int base_seed;
@@ -56,11 +59,18 @@ public:
     void step(DevGraph gr, cudaStream_t stream = nullptr) {
         old_dist.swap(dist);
 
+        const frac_t stay_weight = rw_stay;
+        const frac_t move_weight = 1.0 - rw_stay;
+
+        // node_val = (old_dist / degree) * move_weight
         thrust::transform(thrust::cuda::par.on(stream),
                           old_dist.begin(), old_dist.end(),
                           gr.active_degrees,
                           node_val.begin(),
-                          thrust::divides<frac_t>());
+            [move_weight] __device__ (frac_t d, EdgeIx deg) {
+                return (deg > 0) ? (d / static_cast<frac_t>(deg)) * move_weight : 0.0f;
+            }
+        );
 
         frac_t* raw_node_vals = thrust::raw_pointer_cast(node_val.data());
         frac_t* raw_dist_out = thrust::raw_pointer_cast(dist.data());
@@ -77,6 +87,15 @@ public:
                 gr.ranges + 1,
                 stream
         );
+
+        thrust::transform(thrust::cuda::par.on(stream),
+                          dist.begin(), dist.end(),
+                          old_dist.begin(),
+                          dist.begin(),
+            [stay_weight] __device__ (frac_t summed_neighbors, frac_t self_old) {
+                return summed_neighbors + (self_old * stay_weight);
+            }
+        );
     }
 
     std::vector<frac_t> readRandomWalkValues() {
@@ -90,7 +109,7 @@ private:
         frac_t* raw_node_vals = thrust::raw_pointer_cast(node_val.data());
         frac_t* raw_dist_out = thrust::raw_pointer_cast(dist.data());
 
-        auto v_mapped_iter = thrust::make_permutation_iterator(raw_node_vals, gr.neighbors);
+        thrust::permutation_iterator<frac_t*, NodeIx*> v_mapped_iter = thrust::make_permutation_iterator(raw_node_vals, gr.neighbors);
 
         cudaError_t err = cub::DeviceSegmentedReduce::Sum(
                 nullptr,

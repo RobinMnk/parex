@@ -22,6 +22,13 @@ public:
         init_distribution();
     }
 
+    void setData(std::vector<frac_t>& data) {
+        assert(data.size() == m_distribution.size());
+        for(NodeIx nix = 0; nix < data.size(); nix++) {
+            m_distribution[nix] = data[nix];
+        }
+    }
+
     void init_distribution();
 
     frac_t resetCluster(const Cluster& cluster);
