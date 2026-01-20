@@ -2,7 +2,7 @@
 // Created by robin on 13.03.2025.
 //
 
-#include "../lib/utils/io.h"
+#include "../lib/utils/graph_io.h"
 #include "../lib/core/partition.h"
 #include <gtest/gtest.h>
 #include <numeric>

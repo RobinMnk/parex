@@ -6,6 +6,7 @@ set(CMAKE_CUDA_STANDARD 20)
 
 add_subdirectory(lib)
 add_subdirectory(cuda)
+add_subdirectory(tests)
 
 # Main app
 add_executable(Parex main.cpp)

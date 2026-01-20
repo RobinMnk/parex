@@ -1,5 +1,5 @@
 #include "lib/algorithms/normalized_cut.h"
-#include "lib/utils/io.h"
+#include "lib/utils/graph_io.h"
 #include "lib/utils/timer.h"
 
 
@@ -53,13 +53,14 @@ void test2(Graph& G) {
     Timer t;
     t.start();
     rw.iterate(part, {0});
-    auto millis = t.timeNanos();
-    std::cout << "CPU Random Walk time: " << millis << "ms" << std::endl;
+    auto timeCPU = t.timeNanos();
+    std::cout << "CPU Random Walk time: " << timeCPU << "ns" << std::endl;
 
     t.start();
     cuda.iterateRandomWalk();
-    millis = t.timeNanos();
-    std::cout << "GPU Random Walk time: " << millis << "ms" << std::endl;
+    auto timeGPU = t.timeNanos();
+    std::cout << "GPU Random Walk time: " << timeGPU << "ns" << std::endl;
+    std::cout << "  -> GPU faster by factor " << timeCPU / static_cast<float>(timeGPU) << "\n" << std::endl;
 
     auto y = cuda.readRandomWalkValues();
     auto z = rw.values();
@@ -72,7 +73,6 @@ void test2(Graph& G) {
             std::cerr << "ERROR at nix " << nix << std::endl;
         }
     }
-
 
     Graph G2 = cuda.downloadGraph();
     std::cout << (G == G2) << std::endl;

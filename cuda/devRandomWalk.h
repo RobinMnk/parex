@@ -25,7 +25,6 @@ const frac_t rw_stay = 0.1;
 struct NormalDistributionFunctor {
     unsigned int base_seed;
 
-    // Use a constructor to pass a real-time seed
     explicit NormalDistributionFunctor(unsigned int s) : base_seed(s) {}
 
     __host__ __device__
@@ -51,9 +50,12 @@ void lazyRandomWalkKernel(
     NodeIx i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= numNodes) return;
 
-    // Prefetch ranges to registers
+    // early exit for inactive nodes
+    const NodeIx myDeg = degrees[i];
+    if(myDeg == 0) return;
+
     const NodeIx start = ranges[i];
-    const NodeIx end   = ranges[i+1];
+    const NodeIx end = ranges[i+1];
 
     frac_t incoming_sum = 0.0f;
 

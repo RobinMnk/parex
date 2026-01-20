@@ -18,14 +18,12 @@ inline void copyToDevice(const std::vector<T>& elements, T* devTarget, cudaStrea
 }
 
 class CudaDeviceManager::Impl {
-
     std::unique_ptr<GraphManager> gm;
     std::unique_ptr<RandomWalkManager> rw;
 
 public:
 
     void initialize(const Graph& graph) {
-        // 1. Clear existing if re-initializing
         gm.reset();
         rw.reset();
 
@@ -33,15 +31,6 @@ public:
         rw = std::make_unique<RandomWalkManager>(gm->getView(), graph.numNodes);
     }
 
-//    void initialize(const Graph& graph) {
-//
-//        dist.resize(n);
-//        old_dist.resize(n);
-//        node_val.resize(n);
-//        initRandomWalk(dist, n);
-//        segSum.init(graphView(), randomWalkView(), n);
-//    }
-//
     void iterateRandomWalk() {
         rw->step(gm->getView());
     }
