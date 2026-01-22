@@ -2,7 +2,7 @@
 // Created by robin on 14.01.2026.
 //
 
-#include "graph_manager.h"
+#include "device.h"
 
 __host__ __device__
 inline void DevGraph::deactivateEdge(EdgeIx idx) const {

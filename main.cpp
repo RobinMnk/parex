@@ -11,32 +11,6 @@ void checkBuildMode() {
     #endif
 }
 
-void test(Graph& G) {
-    CudaDeviceManager devGraph;
-    devGraph.initialize(G);
-
-//    std::vector<SwapPair> swaps;
-//    std::vector<NodeUpdate> updates;
-//    std::swap(G.edges[0], G.edges[1]);
-//    std::swap(G.edges[54], G.edges[10]);
-//    std::swap(G.edges[24], G.edges[95]);
-//    swaps.emplace_back(0, 1);
-//    swaps.emplace_back(54, 10);
-//    swaps.emplace_back(24, 95);
-//
-//    devGraph.applyGraphUpdates(swaps,updates);
-
-    Graph G2 = devGraph.downloadGraph();
-
-    std::cout << (G.edges == G2.edges) << std::endl;
-    std::cout << (G.ranges == G2.ranges) << std::endl;
-    std::cout << (G.weights == G2.weights) << std::endl;
-    std::cout << (G.weights.size() == G2.weights.size()) << std::endl;
-    std::cout << (G.numNodes == G2.numNodes) << std::endl;
-    std::cout << (G.numEdges == G2.numEdges) << std::endl;
-    std::cout << (G == G2) << std::endl;
-}
-
 void test2(Graph& G) {
     CudaDeviceManager cuda;
     cuda.initialize(G);

@@ -12,14 +12,14 @@ struct DevGraph {
     const EdgeIx numEdges;
 
     // Graph
-    NodeIx* neighbors;          // size: 2 * numEdges
-    NodeIx* ranges;             // size: numNodes+1
-    EdgeIx* active_degrees;     // size: numNodes
-    NodeIx* labels;
+    const NodeIx* neighbors;          // size: 2 * numEdges
+    const NodeIx* ranges;             // size: numNodes+1
+    const EdgeIx* active_degrees;     // size: numNodes
+    const NodeIx* labels;
 
     // Buffers for Updates
-    EdgeIx* edgeDeletionBuffer;
-    NodeUpdate* nodeUpdateBuffer;
+    const EdgeIx* edgeDeletionBuffer;
+    const NodeUpdate* nodeUpdateBuffer;
 
     __host__ __device__
     inline void deactivateEdge(EdgeIx idx) const;
@@ -42,13 +42,13 @@ void degreeKernel(DevGraph gr, NodeIx numUpdates) {
 
 
 class GraphManager {
-    NodeIx n{0};
-    EdgeIx m{0};
 
-    // Graph and Partition
+    // Graph
     thrust::device_vector<NodeIx> neighbors;
     thrust::device_vector<NodeIx> ranges;
-    thrust::device_vector<EdgeIx> active_degrees;
+
+    // Partition
+    thrust::device_vector<EdgeIx> active_degrees;   // active_degree == 0 implies that a node is inactive
     thrust::device_vector<NodeIx> labels;
 
     // Update buffers
@@ -56,15 +56,27 @@ class GraphManager {
     thrust::device_vector<NodeUpdate> nodeUpdateBuffer;
 
 public:
+    NodeIx n{0};
+    EdgeIx m{0};
+
+    NodeIx numClusters{1};
+
     explicit GraphManager(const Graph& graph) :
-        n(graph.numNodes), m(graph.numEdges), neighbors(graph.edges), ranges(graph.ranges), active_degrees(graph.numNodes),
-        labels(graph.numNodes, 0), edgeDeletionBuffer(2 * graph.numEdges), nodeUpdateBuffer(graph.numNodes)
+        n(graph.numNodes),
+        m(graph.numEdges),
+        neighbors(graph.edges),
+        ranges(graph.ranges),
+        active_degrees(graph.numNodes),
+//        permutation(thrust::make_counting_iterator<NodeIx>(0), thrust::make_counting_iterator(n)),
+        labels(graph.numNodes, 0),
+        edgeDeletionBuffer(2 * graph.numEdges),
+        nodeUpdateBuffer(graph.numNodes)
     {
         thrust::transform(ranges.begin() + 1, ranges.end(), ranges.begin(), active_degrees.begin(), thrust::minus<int>());
         std::cout << "Copied Graph to GPU. \t" << neighbors.size() / 2 << " edges copied" << std::endl;
     }
 
-    DevGraph getView() {
+    [[nodiscard]] DevGraph getView() const {
         return DevGraph{
                 n, m,
                 thrust::raw_pointer_cast(neighbors.data()),
@@ -76,13 +88,20 @@ public:
         };
     }
 
+    thrust::device_vector<NodeIx>& getLabels() {
+        return labels;
+    }
+
+    thrust::device_vector<EdgeIx>& getActiveDegrees() {
+        return active_degrees;
+    }
+
     Graph downloadGraph() {
         Graph g(n, m);
         thrust::copy(neighbors.begin(), neighbors.end(), g.edges.begin());
         thrust::copy(ranges.begin(), ranges.end(), g.ranges.begin());
         return g;
     }
-
 };
 
 

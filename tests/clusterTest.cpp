@@ -55,7 +55,7 @@ protected:
 
     [[maybe_unused]] static void SetUpTestSuite() {
 //        graph = readGraph();
-        graph = readDynGraph("../graphs/uk.mtx").finalize();
+        graph = readDynGraph("../../graphs/uk.mtx").finalize();
     }
 
     static void splitAndCheck(Partition& partition, std::vector<NodeIx> values, NodeIx clusterId, size_t k) {
@@ -91,14 +91,14 @@ std::random_device ClusterTest::rd{};
 std::mt19937 ClusterTest::gen{23121};
 
 TEST_F(ClusterTest, CreateFullPartition) {
-    Partition partition{graph};
+    Partition partition{&graph};
     ASSERT_EQ(partition.numClusters(), 1);
     ASSERT_EQ(partition.getCluster(0).volume, 2 * graph.numEdges);
     ASSERT_EQ(partition.getCluster(0).internalVolume, 2 * graph.numEdges);
 }
 
 TEST_F(ClusterTest, CheckFullPartition) {
-    Partition partition{graph};
+    Partition partition{&graph};
     Cluster cluster = partition.getCluster(0);
     EdgeIx sumDegrees = 0, summedVol = 0;
     for(ClusterVertex cn: cluster) {
@@ -148,7 +148,7 @@ void checkCluster(Graph& graph, Cluster& cluster, Cluster& other) {
 
 TEST_F(ClusterTest, TopLevelCuts) {
     for(NodeIx cutThreshold = 1; cutThreshold < graph.numNodes-1; cutThreshold += graph.numNodes / 4) {
-        Partition partition{graph};
+        Partition partition{&graph};
         std::vector<NodeIx> values(graph.numNodes);
         std::iota(values.begin(), values.end(), 0);
         std::vector<NodeIx> modified{0};
@@ -170,14 +170,14 @@ TEST_F(ClusterTest, TopLevelCuts) {
 }
 
 TEST_P(ClusterTest, MultiplePartitions) {
-    Partition partition{graph};
+    Partition partition{&graph};
     std::vector<NodeIx> values(graph.numNodes);
     size_t k = GetParam();
     splitAndCheck(partition, values, 0, k);
 }
 
 TEST_F(ClusterTest, NestedPartitions) {
-    Partition partition{graph};
+    Partition partition{&graph};
     std::vector<NodeIx> values(graph.numNodes);
     size_t k = 2; // GetParam();
     splitAndCheck(partition, values, 0, k);

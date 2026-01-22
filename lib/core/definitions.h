@@ -6,6 +6,7 @@
 #define RCUT_DEFINITIONS_H
 
 #include <cassert>
+#include <vector>
 
 #ifdef DEBUG
 #include <iostream>
@@ -25,5 +26,12 @@ using EdgeWeight    = unsigned int;
 using frac_t        = double;
 
 const int threads = 256;
+
+struct AllSweepCuts {
+    std::vector<NodeIx> clusterIds;
+    std::vector<NodeIx> offsets;
+    std::vector<float> sparsities;
+};
+
 
 #endif //RCUT_DEFINITIONS_H

@@ -69,7 +69,7 @@ class Partition {
     std::vector<Cluster> clusters;
     std::vector<ClusterVertex> clusterVertices;
     std::vector<uint16_t> splitOracle;
-    std::vector<NodeIx> lookup; // gives the index in clusterVertices for a given NodeIx
+    std::vector<NodeIx> lookup; // gives the index in permutation for a given NodeIx
     std::vector<uint8_t> sc_seen; // tracks seen nodes in sweepCut procedure. Note: vector<uint8_t> is faster than vector<bool> but uses 8x memory
     std::vector<EdgeIx> sc_removeAt; // tracks number of edges ending at given node, used in sweepCut procedure.
     EdgeIx numCutEdges;
@@ -86,7 +86,7 @@ public:
     /// splits Cluster with given id into its connected components and adds resulting clusters to partition and their id to given list
     void consolidate(NodeIx clusterId, std::vector<NodeIx>& modified);
 
-    /// Cuts this cluster at the given offset index (wrt the clusterVertices vector)
+    /// Cuts this cluster at the given offset index (wrt the permutation vector)
     template<bool requiresSort=true, bool consolidatePieces=true>
     void split(NodeIx clusterId, NodeIx offset, std::vector<NodeIx>& modified);
 

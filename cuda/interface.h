@@ -26,6 +26,9 @@ public:
     void iterateRandomWalk();
     std::vector<frac_t> readRandomWalkValues();
 
+    void computeSweepCuts();
+    AllSweepCuts readSweepCuts();
+
 //    void applyGraphUpdates(const std::vector<EdgeIx>& edgeDeletions, const std::vector<NodeUpdate>& updates);
 
 private:

@@ -29,3 +29,4 @@ function(configure_test_target target_name source_file)
 endfunction()
 
 configure_test_target(cudaTest cudaTest.cpp)
+configure_test_target(clusterTest clusterTest.cpp)

@@ -51,11 +51,11 @@ void lazyRandomWalkKernel(
     if (i >= numNodes) return;
 
     // early exit for inactive nodes
-    const NodeIx myDeg = degrees[i];
+    const NodeIx myDeg = __ldg(&degrees[i]);
     if(myDeg == 0) return;
 
-    const NodeIx start = ranges[i];
-    const NodeIx end = ranges[i+1];
+    const NodeIx start = __ldg(&ranges[i]);
+    const NodeIx end   = __ldg(&ranges[i+1]);
 
     frac_t incoming_sum = 0.0f;
 
@@ -81,7 +81,7 @@ class RandomWalkManager {
     size_t temp_storage_bytes = 0;
 
 public:
-    explicit RandomWalkManager(DevGraph gr, NodeIx n) : dist(n), old_dist(n), node_val(n), numNodes(n) {
+    RandomWalkManager(DevGraph gr, NodeIx n) : dist(n), old_dist(n), node_val(n), numNodes(n) {
         initRandomWalk(seed);
         prepare_cub(gr, static_cast<int>(n));
     }
@@ -152,7 +152,11 @@ public:
         );
     }
 
-    std::vector<frac_t> readRandomWalkValues() {
+    [[nodiscard]] const thrust::device_vector<frac_t>& randomWalkValues() const {
+        return dist;
+    }
+
+    std::vector<frac_t> valuesToCPU() {
         std::vector<frac_t> rwVals(numNodes);
         thrust::copy(dist.begin(), dist.end(), rwVals.begin());
         return rwVals;
@@ -163,7 +167,7 @@ private:
         frac_t* raw_node_vals = thrust::raw_pointer_cast(node_val.data());
         frac_t* raw_dist_out = thrust::raw_pointer_cast(dist.data());
 
-        thrust::permutation_iterator<frac_t*, NodeIx*> v_mapped_iter = thrust::make_permutation_iterator(raw_node_vals, gr.neighbors);
+        thrust::permutation_iterator<frac_t*, const NodeIx*> v_mapped_iter = thrust::make_permutation_iterator(raw_node_vals, gr.neighbors);
 
         cudaError_t err = cub::DeviceSegmentedReduce::Sum(
                 nullptr,
