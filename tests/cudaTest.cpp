@@ -27,13 +27,24 @@ TEST_F(CudaTest, UploadGraph) {
     ASSERT_EQ(graph, G2);
 }
 
+TEST_F(CudaTest, Degrees) {
+    auto deg = cuda.downloadDegrees();
+
+    std::vector<EdgeIx> expected(graph.numNodes);
+    for(NodeIx nix = 0; nix < graph.numNodes; nix++) {
+        expected[nix] = graph.degree(nix);
+    }
+
+    ASSERT_EQ(deg, expected);
+}
+
 TEST_P(CudaTest, RandomWalk) {
-    auto x = cuda.readRandomWalkValues();
+    auto rwData = cuda.readRandomWalkValues();
 
     int numSteps = GetParam();
 
     RandomWalk rw(graph.numNodes);
-    rw.setData(x);
+    rw.setData(rwData);
     Partition part(&graph);
 
     for(int i = 0; i < numSteps; i++) {
@@ -50,7 +61,103 @@ TEST_P(CudaTest, RandomWalk) {
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    RW_,
+    Iterations,
     CudaTest,
-    testing::Values(1, 10, 50)
+    testing::Values(0, 1, 2, 4, 8, 16, 64, 128, 256)
 );
+
+
+TEST_F(CudaTest, SweepCutTest) {
+    auto rwData = cuda.readRandomWalkValues();
+    RandomWalk rw(graph.numNodes);
+    rw.setData(rwData);
+    Partition part(&graph);
+
+    SweepCut expected = part.sweepCut(0, rwData);
+
+//    std::vector<EdgeIx> vec(graph.numNodes);
+//    for(auto& x: part) {
+//        for(auto y: x) {
+//            vec[y.nix] = y.internalDegree;
+//        }
+//    }
+//
+//    std::vector<EdgeIx> vec2(graph.numNodes);
+//    for(NodeIx nix = 0; nix < graph.numNodes; nix++) {
+//        vec2[nix] = graph.degree(nix);
+//    }
+//
+//    ASSERT_EQ(vec, vec2);
+
+    cuda.inspectSweepCut(expected.prefix_sums, expected.cutVolumes);
+
+    cuda.computeSweepCuts();
+    AllSweepCuts result = cuda.readSweepCuts();
+
+    EXPECT_EQ(result.clusterIds.size(), 1);
+    EXPECT_EQ(result.offsets.size(), 1);
+    EXPECT_EQ(result.sparsities.size(), 1);
+
+    EXPECT_EQ(result.clusterIds[0], 0);
+
+    for(NodeIx i = result.offsets[0] - 5; i < result.offsets[0] + 5; i++) {
+        std::cout << "CPU sparsity = " << (expected.prefix_sums[i] / expected.cutVolumes[i]) << std::endl;
+    }
+
+//    EXPECT_EQ(result.offsets[0], expected.offset);
+    EXPECT_NEAR(result.sparsities[0], expected.sparsity, 0.0000001);
+}
+
+
+
+TEST_P(CudaTest, SweepCutTestMultipleSteps) {
+    auto rwData = cuda.readRandomWalkValues();
+    RandomWalk rw(graph.numNodes);
+    rw.setData(rwData);
+    Partition part(&graph);
+
+    int numSteps = GetParam();
+
+    for(int i = 0; i < numSteps; i++) {
+        rw.iterate(part, {0});
+        cuda.iterateRandomWalk();
+
+        SweepCut expected = part.sweepCut(0, rw.values());
+
+    //    std::vector<EdgeIx> vec(graph.numNodes);
+    //    for(auto& x: part) {
+    //        for(auto y: x) {
+    //            vec[y.nix] = y.internalDegree;
+    //        }
+    //    }
+    //
+    //    std::vector<EdgeIx> vec2(graph.numNodes);
+    //    for(NodeIx nix = 0; nix < graph.numNodes; nix++) {
+    //        vec2[nix] = graph.degree(nix);
+    //    }
+    //
+    //    ASSERT_EQ(vec, vec2);
+
+        cuda.inspectSweepCut(expected.prefix_sums, expected.cutVolumes);
+
+        cuda.computeSweepCuts();
+        AllSweepCuts result = cuda.readSweepCuts();
+
+        EXPECT_EQ(result.clusterIds.size(), 1);
+        EXPECT_EQ(result.offsets.size(), 1);
+        EXPECT_EQ(result.sparsities.size(), 1);
+
+        EXPECT_EQ(result.clusterIds[0], 0);
+
+//        EXPECT_EQ(result.offsets[0], expected.offset);
+        EXPECT_NEAR(result.sparsities[0], expected.sparsity, 0.00000001);
+    }
+}
+//
+//INSTANTIATE_TEST_SUITE_P(
+//        SC_,
+//        CudaTest,
+//        testing::Values(1, 10, 50, 100)
+//);
+
+

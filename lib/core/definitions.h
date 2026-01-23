@@ -23,7 +23,7 @@
 using NodeIx        = unsigned int;
 using EdgeIx        = unsigned int;
 using EdgeWeight    = unsigned int;
-using frac_t        = double;
+using frac_t        = float;
 
 const int threads = 256;
 

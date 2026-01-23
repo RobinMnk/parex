@@ -20,6 +20,8 @@ struct ClusterVertex {
 struct SweepCut {
     frac_t sparsity;
     NodeIx offset;
+    std::vector<EdgeIx> prefix_sums;
+    std::vector<EdgeIx> cutVolumes;
 };
 
 class Partition;
@@ -307,12 +309,17 @@ SweepCut Partition::sweepCut(NodeIx clusterId, const T& values) {
     EdgeIx cutEdges = 0;
     EdgeIx cutVolume = 0;
     NodeIx offset = 0;
-    SweepCut bestCut{1000, 0 };
+    SweepCut bestCut{1000, 0, {}};
 
     sortCluster(current, values);
 
+    std::vector<EdgeIx> prefix_sums(current.size());
+    std::vector<EdgeIx> cutVolumes(current.size());
+
     for(const ClusterVertex& cv: clusters[clusterId]) {
         cutVolume += graph->degree(cv.nix);
+
+        prefix_sums[offset] = cutVolume;
 
         for(auto it = current.edgeBegin(cv); it != current.edgeEnd(cv); ++it) {
             NodeIx nb = *it;
@@ -335,14 +342,19 @@ SweepCut Partition::sweepCut(NodeIx clusterId, const T& values) {
 
         frac_t sparsity = static_cast<frac_t>(cutEdges) / denom;
 
+        cutVolumes[offset] = std::min(cutVolume, clusters[clusterId].volume - cutVolume);
+
         if(sparsity < bestCut.sparsity) {
-            bestCut = { sparsity, offset };
+            bestCut = { sparsity, offset, {} };
         }
         offset++;
         sc_seen[cv.nix] = 1;
     }
 
     for(const ClusterVertex& cv: current) sc_seen[cv.nix] = 0;
+
+    bestCut.prefix_sums = prefix_sums;
+    bestCut.cutVolumes = cutVolumes;
 
     return bestCut;
 }

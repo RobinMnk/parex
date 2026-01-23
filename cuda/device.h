@@ -40,6 +40,9 @@ public:
     std::vector<frac_t> readRandomWalkValues() {
         return rw->valuesToCPU();
     }
+    std::vector<EdgeIx> downloadDegrees() {
+        return gm->downloadDegrees();
+    }
 
     void computeSweepCuts() {
         sc->compute(*gm, rw->randomWalkValues());
@@ -47,6 +50,10 @@ public:
 
     AllSweepCuts getSweepCuts() {
         return sc->resultToCPU(gm->numClusters);
+    }
+
+    void inspectSweepCut(std::vector<EdgeIx>& prefixSums, std::vector<EdgeIx>& cutVolumes) {
+        sc->inspect(prefixSums, cutVolumes);
     }
 
 
@@ -93,12 +100,16 @@ void CudaDeviceManager::initialize(const Graph &graph) { impl->initialize(graph)
 Graph CudaDeviceManager::downloadGraph() { return impl->downloadGraph(); }
 
 std::vector<frac_t> CudaDeviceManager::readRandomWalkValues() { return impl->readRandomWalkValues(); }
+std::vector<EdgeIx> CudaDeviceManager::downloadDegrees() { return impl->downloadDegrees(); }
 
 void CudaDeviceManager::iterateRandomWalk() { impl->iterateRandomWalk(); }
 
 void CudaDeviceManager::computeSweepCuts() { impl->computeSweepCuts(); }
 
 AllSweepCuts CudaDeviceManager::readSweepCuts() { return impl->getSweepCuts(); }
+
+
+void CudaDeviceManager::inspectSweepCut(std::vector<EdgeIx>& prefixSums, std::vector<EdgeIx>& cutVolumes) { impl->inspectSweepCut(prefixSums, cutVolumes); }
 
 //void CudaDeviceManager::applyGraphUpdates(const std::vector<EdgeIx>& edgeDeletions, const std::vector<NodeUpdate>& updates) {
 //    impl->applyGraphUpdates(edgeDeletions, updates);

@@ -10,7 +10,7 @@
 #include <random>
 
 const frac_t rw_stay = 0.1;
-std::mt19937 random_source{0};
+std::mt19937 random_source{1};
 
 class RandomWalk {
     std::valarray<frac_t> m_distribution;

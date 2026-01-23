@@ -22,11 +22,13 @@ public:
 
     void initialize(const Graph& graph);
     Graph downloadGraph();
+    std::vector<EdgeIx> downloadDegrees();
 
     void iterateRandomWalk();
     std::vector<frac_t> readRandomWalkValues();
 
     void computeSweepCuts();
+    void inspectSweepCut(std::vector<EdgeIx>& prefixSums, std::vector<EdgeIx>& cutVolumes);
     AllSweepCuts readSweepCuts();
 
 //    void applyGraphUpdates(const std::vector<EdgeIx>& edgeDeletions, const std::vector<NodeUpdate>& updates);

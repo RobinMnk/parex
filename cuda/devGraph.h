@@ -28,17 +28,17 @@ struct DevGraph {
     inline void handleActiveDegrees(NodeIx idx) const;
 };
 
-__global__
-void deactivateEdgeKernel(DevGraph gr, EdgeIx numEdgeDeletions) {
-    NodeIx idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if(idx < numEdgeDeletions) gr.deactivateEdge(idx);
-}
-
-__global__
-void degreeKernel(DevGraph gr, NodeIx numUpdates) {
-    NodeIx idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < numUpdates) gr.handleActiveDegrees(idx);
-}
+//__global__
+//void deactivateEdgeKernel(DevGraph gr, EdgeIx numEdgeDeletions) {
+//    NodeIx idx = blockIdx.x * blockDim.x + threadIdx.x;
+//    if(idx < numEdgeDeletions) gr.deactivateEdge(idx);
+//}
+//
+//__global__
+//void degreeKernel(DevGraph gr, NodeIx numUpdates) {
+//    NodeIx idx = blockIdx.x * blockDim.x + threadIdx.x;
+//    if (idx < numUpdates) gr.handleActiveDegrees(idx);
+//}
 
 
 class GraphManager {
@@ -50,6 +50,7 @@ class GraphManager {
     // Partition
     thrust::device_vector<EdgeIx> active_degrees;   // active_degree == 0 implies that a node is inactive
     thrust::device_vector<NodeIx> labels;
+    thrust::device_vector<EdgeIx> volumes;
 
     // Update buffers
     thrust::device_vector<EdgeIx> edgeDeletionBuffer;
@@ -69,6 +70,7 @@ public:
         active_degrees(graph.numNodes),
 //        permutation(thrust::make_counting_iterator<NodeIx>(0), thrust::make_counting_iterator(n)),
         labels(graph.numNodes, 0),
+        volumes{2 * graph.numEdges},
         edgeDeletionBuffer(2 * graph.numEdges),
         nodeUpdateBuffer(graph.numNodes)
     {
@@ -94,6 +96,16 @@ public:
 
     thrust::device_vector<EdgeIx>& getActiveDegrees() {
         return active_degrees;
+    }
+
+    thrust::device_vector<EdgeIx>& getVolumes() {
+        return volumes;
+    }
+
+    std::vector<EdgeIx> downloadDegrees() {
+        std::vector<EdgeIx> degrees(n);
+        thrust::copy(active_degrees.begin(), active_degrees.end(), degrees.begin());
+        return degrees;
     }
 
     Graph downloadGraph() {

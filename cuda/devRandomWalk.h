@@ -19,7 +19,7 @@
 #include "devGraph.h"
 
 
-const unsigned int seed{0};
+const unsigned int seed{6};
 const frac_t rw_stay = 0.1;
 
 struct NormalDistributionFunctor {
