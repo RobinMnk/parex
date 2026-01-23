@@ -75,22 +75,6 @@ TEST_F(CudaTest, SweepCutTest) {
 
     SweepCut expected = part.sweepCut(0, rwData);
 
-//    std::vector<EdgeIx> vec(graph.numNodes);
-//    for(auto& x: part) {
-//        for(auto y: x) {
-//            vec[y.nix] = y.internalDegree;
-//        }
-//    }
-//
-//    std::vector<EdgeIx> vec2(graph.numNodes);
-//    for(NodeIx nix = 0; nix < graph.numNodes; nix++) {
-//        vec2[nix] = graph.degree(nix);
-//    }
-//
-//    ASSERT_EQ(vec, vec2);
-
-    cuda.inspectSweepCut(expected.prefix_sums, expected.cutVolumes);
-
     cuda.computeSweepCuts();
     AllSweepCuts result = cuda.readSweepCuts();
 
@@ -99,10 +83,6 @@ TEST_F(CudaTest, SweepCutTest) {
     EXPECT_EQ(result.sparsities.size(), 1);
 
     EXPECT_EQ(result.clusterIds[0], 0);
-
-    for(NodeIx i = result.offsets[0] - 5; i < result.offsets[0] + 5; i++) {
-        std::cout << "CPU sparsity = " << (expected.prefix_sums[i] / expected.cutVolumes[i]) << std::endl;
-    }
 
 //    EXPECT_EQ(result.offsets[0], expected.offset);
     EXPECT_NEAR(result.sparsities[0], expected.sparsity, 0.0000001);
@@ -123,22 +103,6 @@ TEST_P(CudaTest, SweepCutTestMultipleSteps) {
         cuda.iterateRandomWalk();
 
         SweepCut expected = part.sweepCut(0, rw.values());
-
-    //    std::vector<EdgeIx> vec(graph.numNodes);
-    //    for(auto& x: part) {
-    //        for(auto y: x) {
-    //            vec[y.nix] = y.internalDegree;
-    //        }
-    //    }
-    //
-    //    std::vector<EdgeIx> vec2(graph.numNodes);
-    //    for(NodeIx nix = 0; nix < graph.numNodes; nix++) {
-    //        vec2[nix] = graph.degree(nix);
-    //    }
-    //
-    //    ASSERT_EQ(vec, vec2);
-
-        cuda.inspectSweepCut(expected.prefix_sums, expected.cutVolumes);
 
         cuda.computeSweepCuts();
         AllSweepCuts result = cuda.readSweepCuts();

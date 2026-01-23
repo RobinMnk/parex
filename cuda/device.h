@@ -52,9 +52,9 @@ public:
         return sc->resultToCPU(gm->numClusters);
     }
 
-    void inspectSweepCut(std::vector<EdgeIx>& prefixSums, std::vector<EdgeIx>& cutVolumes) {
-        sc->inspect(prefixSums, cutVolumes);
-    }
+//    void inspectSweepCut(std::vector<EdgeIx>& prefixSums, std::vector<EdgeIx>& cutVolumes) {
+//        sc->inspect(prefixSums, cutVolumes);
+//    }
 
 
 //
@@ -109,7 +109,7 @@ void CudaDeviceManager::computeSweepCuts() { impl->computeSweepCuts(); }
 AllSweepCuts CudaDeviceManager::readSweepCuts() { return impl->getSweepCuts(); }
 
 
-void CudaDeviceManager::inspectSweepCut(std::vector<EdgeIx>& prefixSums, std::vector<EdgeIx>& cutVolumes) { impl->inspectSweepCut(prefixSums, cutVolumes); }
+//void CudaDeviceManager::inspectSweepCut(std::vector<EdgeIx>& prefixSums, std::vector<EdgeIx>& cutVolumes) { impl->inspectSweepCut(prefixSums, cutVolumes); }
 
 //void CudaDeviceManager::applyGraphUpdates(const std::vector<EdgeIx>& edgeDeletions, const std::vector<NodeUpdate>& updates) {
 //    impl->applyGraphUpdates(edgeDeletions, updates);

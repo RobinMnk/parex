@@ -127,8 +127,8 @@ class SweepCutManager {
     thrust::device_vector<NodeIx> d_min_indices;
     thrust::device_vector<float> d_min_ratios;
 
-    std::vector<EdgeIx> prefixSums;
-    std::vector<EdgeIx> cutVolumes;
+//    std::vector<EdgeIx> prefixSums;
+//    std::vector<EdgeIx> cutVolumes;
 
     void prepareNodeContributions(const DevGraph gr, const thrust::device_vector<frac_t>& values, cudaStream_t stream = nullptr) {
         unsigned int blocksPerGrid = (gr.numNodes + threads - 1) / threads;
@@ -166,28 +166,28 @@ public:
         return { clusterIds, offsets, sparsities };
     }
 
-    void inspect(std::vector<EdgeIx>& pS, std::vector<EdgeIx>& s) {
-        prefixSums = pS;
-        cutVolumes = s;
-    }
-
-    void checkDegrees(GraphManager& gm) {
-        std::vector<float> comp(gm.n);
-        thrust::copy(d_sweepCuts.begin(), d_sweepCuts.end(), comp.begin());
-
-        std::vector<float> pw(gm.n);
-        thrust::copy(d_prefix_weights.begin(), d_prefix_weights.end(), pw.begin());
-
-        std::vector<float> deg(gm.n);
-        thrust::copy(d_volumes.begin(), d_volumes.end(), deg.begin());
-
+//    void inspect(std::vector<EdgeIx>& pS, std::vector<EdgeIx>& s) {
+//        prefixSums = pS;
+//        cutVolumes = s;
+//    }
+//
+//    void checkDegrees(GraphManager& gm) {
+//        std::vector<float> comp(gm.n);
+//        thrust::copy(d_sweepCuts.begin(), d_sweepCuts.end(), comp.begin());
+//
+//        std::vector<float> pw(gm.n);
+//        thrust::copy(d_prefix_weights.begin(), d_prefix_weights.end(), pw.begin());
+//
+//        std::vector<float> deg(gm.n);
+//        thrust::copy(d_volumes.begin(), d_volumes.end(), deg.begin());
+//
 //        for(int i = 0; i < 20; i++) {
 //            std::cout << i << ":  CPU = " << prefixSums[i] << " / " << cutVolumes[i] << " = " << (prefixSums[i] / cutVolumes[i])<< " \tGPU = " << pw[i] << " / " << deg[i] << " = " << comp[i]  << "\n";
 //        }
 //        std::cout << ((sparsities == comp) ? " Ratios fine." : "ERROR: Ratios BROKEN!!!") << std::endl;
-
-    }
+//    }
 };
+
 void SweepCutManager::solve(GraphManager& gm, const thrust::device_vector<frac_t>& values) {
     thrust::sequence(d_indices.begin(), d_indices.end());
 
@@ -241,33 +241,6 @@ void SweepCutManager::solve(GraphManager& gm, const thrust::device_vector<frac_t
 
         return (denom > 0) ? (cutSize / (float)denom) : 1e30f;
     });
-//    auto input_begin = thrust::make_zip_iterator(thrust::make_tuple(
-//            d_prefix_weights.begin(),
-//            d_volumes.begin(),
-//            d_sorted_labels.begin()
-//    ));
-
-//    thrust::transform(input_begin, input_begin + gm.n, d_sweepCuts.begin(),
-//                      [volumes] __device__ (thrust::tuple<float, float, NodeIx> triplet) {
-//                          float cutSize    = thrust::get<0>(triplet);
-//                          float vol        = thrust::get<1>(triplet);
-//                          NodeIx clusterId = thrust::get<2>(triplet);
-//                          float totalVol = volumes[clusterId];
-//                          return cutSize / ((vol < totalVol) ? vol : totalVol);
-//                      });
-
-    checkDegrees(gm);
-
-    // 4. Calculate Ratios and keep original indices
-    // We store these in a zip iterator for reduction
-//    thrust::device_vector<float> d_ratios(N);
-//    thrust::transform(d_prefix_weights.begin(), d_prefix_weights.end(), gm.getActiveDegrees().begin(), d_sweepCuts.begin(),thrust::divides<float>());
-
-    // 5. Segmented Reduction to find Min Ratio per Label
-    // Each label can have multiple entries; we want the min ratio and its index
-//    int num_labels = thrust::inner_product(d_sorted_labels.begin(), d_sorted_labels.end() - 1,
-//                                           d_sorted_labels.begin() + 1, 1,
-//                                           thrust::plus<int>(), thrust::not_equal_to<NodeIx>());
 
 
     auto ratio_index_begin = thrust::make_zip_iterator(thrust::make_tuple(d_sweepCuts.begin(), d_indices.begin()));
