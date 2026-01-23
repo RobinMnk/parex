@@ -83,7 +83,7 @@ class RandomWalkManager {
 public:
     RandomWalkManager(DevGraph gr, NodeIx n) : dist(n), old_dist(n), node_val(n), numNodes(n) {
         initRandomWalk(seed);
-        prepare_cub(gr, static_cast<int>(n));
+//        prepare_cub(gr, static_cast<int>(n));
     }
 
     ~RandomWalkManager() {

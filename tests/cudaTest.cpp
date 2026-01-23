@@ -90,7 +90,7 @@ TEST_F(CudaTest, SweepCutTest) {
 
 
 
-TEST_P(CudaTest, SweepCutTestMultipleSteps) {
+TEST_P(CudaTest, SweepCut) {
     auto rwData = cuda.readRandomWalkValues();
     RandomWalk rw(graph.numNodes);
     rw.setData(rwData);
