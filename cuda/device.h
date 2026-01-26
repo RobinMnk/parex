@@ -52,6 +52,10 @@ public:
         return sc->resultToCPU(gm->numClusters);
     }
 
+    void updateLabels(std::vector<NodeIx>& nodeLabels, NodeIx activeClusters) {
+        gm->updateLabels(nodeLabels, activeClusters);
+    }
+
 //    void inspectSweepCut(std::vector<EdgeIx>& prefixSums, std::vector<EdgeIx>& cutVolumes) {
 //        sc->inspect(prefixSums, cutVolumes);
 //    }
@@ -107,6 +111,8 @@ void CudaDeviceManager::iterateRandomWalk() { impl->iterateRandomWalk(); }
 void CudaDeviceManager::computeSweepCuts() { impl->computeSweepCuts(); }
 
 AllSweepCuts CudaDeviceManager::readSweepCuts() { return impl->getSweepCuts(); }
+
+void CudaDeviceManager::updateLabels(std::vector<NodeIx>& nodeLabels, NodeIx activeClusters) { impl->updateLabels(nodeLabels, activeClusters); }
 
 
 //void CudaDeviceManager::inspectSweepCut(std::vector<EdgeIx>& prefixSums, std::vector<EdgeIx>& cutVolumes) { impl->inspectSweepCut(prefixSums, cutVolumes); }

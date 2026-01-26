@@ -29,6 +29,44 @@ struct Config {
 };
 
 
+//template<Strategy strategy = {}>
+//Partition parallelExpanderDecomposition(Graph& graph, CudaDeviceManager& cuda, const Config& config = {}) {
+//    Partition decomposition{&graph};
+//
+//    std::vector<NodeIx> active{0}; // assume graph is connected!
+//
+//    while(!active.empty()) {
+//        active.clear();
+//
+//        cuda.computeSweepCuts();
+//        AllSweepCuts result = cuda.readSweepCuts();
+//
+//        NodeIx ix{0};
+//        for(NodeIx clusterId: result.clusterIds) {
+//            SweepCut sc{result.sparsities[ix], result.offsets[ix]};
+//
+//            if(sc.sparsity < config.targetSparsity) {
+//                LOG("       -> considered sparse -> cutting");
+//                std::vector<NodeIx> modified{clusterId};
+//                decomposition.split<false>(clusterId, sc.offset, modified);
+//
+//                for (NodeIx clx: modified) {
+//                    const Cluster &cl = decomposition.getCluster(clx);
+//                    if (cl.size() < 2 || cl.internalVolume == 0) continue;
+//                    active.push_back(clx);
+//                }
+//            }
+//
+//            ix++;
+//        }
+//
+//        // TODO: tell GPU cluster updates
+//        // needs: new labels, cluster volumes, num clusters,
+//    }
+//
+//}
+
+
 template<Strategy strategy = {}>
 Partition expanderDecomposition(Graph& graph, const Config& config = {}) {
     RandomWalk walk{graph.numNodes};

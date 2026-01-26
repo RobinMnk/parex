@@ -44,9 +44,8 @@ void lazyRandomWalkKernel(
         const EdgeIx* __restrict__ degrees,
         const frac_t* __restrict__ old_dist,
         frac_t* __restrict__ dist,
-        frac_t stay_weight,
-        frac_t move_weight)
-{
+        frac_t stay_weight
+) {
     NodeIx i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= numNodes) return;
 
@@ -65,10 +64,13 @@ void lazyRandomWalkKernel(
     for (NodeIx j = start; j < end; ++j) {
         const NodeIx neighbor = neighbors[j];
         const EdgeIx deg = degrees[neighbor];
-        incoming_sum += (__ldg(&old_dist[neighbor]) / static_cast<frac_t>(deg));
+        if(deg != 0) {
+            // inactive nodes have deg == 0
+            incoming_sum += (__ldg(&old_dist[neighbor]) / static_cast<frac_t>(deg));
+        }
     }
 
-    dist[i] = (incoming_sum * move_weight) + (old_dist[i] * stay_weight);
+    dist[i] = (incoming_sum * (1.0f - stay_weight)) + (old_dist[i] * stay_weight);
 }
 
 class RandomWalkManager {
@@ -93,18 +95,16 @@ public:
     void step(const DevGraph gr, cudaStream_t stream = nullptr) {
         old_dist.swap(dist);
 
-        int threadsPerBlock = 256;
-        unsigned int blocksPerGrid = (numNodes + threadsPerBlock - 1) / threadsPerBlock;
+        unsigned int blocksPerGrid = (numNodes + threads - 1) / threads;
 
-        lazyRandomWalkKernel<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(
+        lazyRandomWalkKernel<<<blocksPerGrid, threads, 0, stream>>>(
                 numNodes,
                 gr.ranges,
                 gr.neighbors,
                 gr.active_degrees,
                 thrust::raw_pointer_cast(old_dist.data()),
                 thrust::raw_pointer_cast(dist.data()),
-                rw_stay,
-                1.0f - rw_stay
+                rw_stay
         );
     }
 
@@ -112,7 +112,7 @@ public:
         old_dist.swap(dist);
 
         const frac_t stay_weight = rw_stay;
-        const frac_t move_weight = 1.0 - rw_stay;
+        const frac_t move_weight = 1.0f - rw_stay;
 
         // node_val = (old_dist / degree) * move_weight
         thrust::transform(thrust::cuda::par.on(stream),

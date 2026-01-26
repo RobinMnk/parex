@@ -12,9 +12,6 @@
 #include <thrust/scan.h>
 #include <thrust/reduce.h>
 #include <thrust/iterator/zip_iterator.h>
-#include <thrust/tuple.h>
-#include <thrust/inner_product.h>
-
 
 __global__
 void nodeDiffKernel(
@@ -204,7 +201,7 @@ void SweepCutManager::solve(GraphManager& gm, const thrust::device_vector<frac_t
     // Zip everything that needs to stay synchronized with the keys
     auto begin_data = thrust::make_zip_iterator(thrust::make_tuple(
             nodeContributions.begin(),
-            d_volumes.begin(),   // Raw degrees here
+            d_volumes.begin(),
             d_indices.begin())
     );
 
@@ -231,16 +228,17 @@ void SweepCutManager::solve(GraphManager& gm, const thrust::device_vector<frac_t
     thrust::transform(d_prefix_weights.begin(), d_prefix_weights.end(), // Prefix Cut
                       thrust::make_zip_iterator(thrust::make_tuple(d_volumes.begin(), d_sorted_labels.begin())), // Prefix Vol + Label
                       d_sweepCuts.begin(), // Result Ratio
-    [clusterVolumesPtr] __device__ (float cutSize, thrust::tuple<EdgeIx, NodeIx> t) {
-        EdgeIx prefixVol = thrust::get<0>(t);
-        NodeIx clusterId = thrust::get<1>(t);
-        EdgeIx totalVol  = clusterVolumesPtr[clusterId];
+                        [clusterVolumesPtr] __device__ (float cutSize, thrust::tuple<EdgeIx, NodeIx> t) {
+                                EdgeIx prefixVol = thrust::get<0>(t);
+                                NodeIx clusterId = thrust::get<1>(t);
+                                EdgeIx totalVol  = clusterVolumesPtr[clusterId];
 
-        // Denominator: min(vol, totalVol - vol)
-        EdgeIx denom = (prefixVol < totalVol - prefixVol) ? prefixVol : (totalVol - prefixVol);
+                                // Denominator: min(vol, totalVol - vol)
+                                EdgeIx denom = (prefixVol < totalVol - prefixVol) ? prefixVol : (totalVol - prefixVol);
 
-        return (denom > 0) ? (cutSize / (float)denom) : 1e30f;
-    });
+                                return (denom > 0) ? (cutSize / (float)denom) : 1e30f;
+                            }
+    );
 
 
     auto ratio_index_begin = thrust::make_zip_iterator(thrust::make_tuple(d_sweepCuts.begin(), d_indices.begin()));

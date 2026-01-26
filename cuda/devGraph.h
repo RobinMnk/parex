@@ -5,6 +5,12 @@
 #ifndef PAREX_DEVGRAPH_H
 #define PAREX_DEVGRAPH_H
 
+
+#include <thrust/device_vector.h>
+#include <thrust/sort.h>
+#include <thrust/reduce.h>
+#include <thrust/fill.h>
+#include <thrust/scatter.h>
 #include "core/definitions.h"
 
 struct DevGraph {
@@ -41,6 +47,41 @@ struct DevGraph {
 //}
 
 
+__global__
+void updateActiveNodesKernel(
+        NodeIx numNodes,
+        const NodeIx* __restrict__ ranges,
+        const NodeIx* __restrict__ neighbors,
+        const NodeIx* __restrict__ labels,
+        EdgeIx* __restrict__ activeDegrees
+) {
+    NodeIx i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= numNodes) return;
+
+    // early exit for inactive nodes
+    const NodeIx clusterId = __ldg(&labels[i]);
+    if(clusterId == numNodes) {
+        activeDegrees[i] = 0;
+        return;
+    }
+
+    const NodeIx start = __ldg(&ranges[i]);
+    const NodeIx end   = __ldg(&ranges[i+1]);
+
+    EdgeIx degree = 0;
+
+    // The #pragma unroll hint tells the compiler to optimize the loop
+    // for small segments, which are common in many graphs.
+#pragma unroll 4
+    for (NodeIx j = start; j < end; ++j) {
+        const NodeIx neighbor = neighbors[j];
+        degree += (__ldg(&ranges[neighbor]) != clusterId);
+    }
+
+    activeDegrees[i] = degree;
+}
+
+
 class GraphManager {
 
     // Graph
@@ -51,10 +92,13 @@ class GraphManager {
     thrust::device_vector<EdgeIx> active_degrees;   // active_degree == 0 implies that a node is inactive
     thrust::device_vector<NodeIx> labels;
     thrust::device_vector<EdgeIx> volumes;
+    NodeIx numActiveClusters;
 
     // Update buffers
     thrust::device_vector<EdgeIx> edgeDeletionBuffer;
     thrust::device_vector<NodeUpdate> nodeUpdateBuffer;
+
+    void updateVolumes();
 
 public:
     NodeIx n{0};
@@ -71,6 +115,7 @@ public:
 //        permutation(thrust::make_counting_iterator<NodeIx>(0), thrust::make_counting_iterator(n)),
         labels(graph.numNodes, 0),
         volumes{2 * graph.numEdges},
+        numActiveClusters{1},
         edgeDeletionBuffer(2 * graph.numEdges),
         nodeUpdateBuffer(graph.numNodes)
     {
@@ -114,7 +159,64 @@ public:
         thrust::copy(ranges.begin(), ranges.end(), g.ranges.begin());
         return g;
     }
+
+    void updateLabels(std::vector<NodeIx>& nodeLabels, NodeIx activeClusters) {
+        labels = nodeLabels;
+        numActiveClusters = activeClusters;
+
+        unsigned int blocksPerGrid = (n + threads - 1) / threads;
+
+        updateActiveNodesKernel<<<blocksPerGrid, threads, 0, nullptr>>>(
+            n,
+            thrust::raw_pointer_cast(ranges.data()),
+            thrust::raw_pointer_cast(neighbors.data()),
+            thrust::raw_pointer_cast(labels.data()),
+            thrust::raw_pointer_cast(active_degrees.data())
+        );
+
+        updateVolumes();
+    }
 };
+
+void GraphManager::updateVolumes() {
+    // Output vector
+    volumes.resize(numActiveClusters);
+
+    // --- Make copies for sorting ---
+    thrust::device_vector<NodeIx> labels_sorted = labels;
+    thrust::device_vector<float> degrees_sorted = active_degrees;
+
+    // --- Radix sort by labels ---
+    thrust::sort_by_key(
+            labels_sorted.begin(),
+            labels_sorted.end(),
+            degrees_sorted.begin()
+    );
+
+    // --- Reduce by key ---
+    thrust::device_vector<NodeIx> unique_labels(numActiveClusters);
+    thrust::device_vector<float> summed_degrees(numActiveClusters);
+
+    auto end = thrust::reduce_by_key(
+            labels_sorted.begin(),
+            labels_sorted.end(),
+            degrees_sorted.begin(),
+            unique_labels.begin(),
+            summed_degrees.begin()
+    );
+
+    const size_t num_unique = end.first - unique_labels.begin();
+
+    // --- Scatter results into volumes ---
+    thrust::scatter(
+            summed_degrees.begin(),
+            summed_degrees.begin() + num_unique,
+            unique_labels.begin(),
+            volumes.begin()
+    );
+}
+
+
 
 
 

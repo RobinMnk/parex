@@ -31,6 +31,8 @@ public:
 //    void inspectSweepCut(std::vector<EdgeIx>& prefixSums, std::vector<EdgeIx>& cutVolumes);
     AllSweepCuts readSweepCuts();
 
+    void updateLabels(std::vector<NodeIx>& nodeLabels, NodeIx activeClusters);
+
 //    void applyGraphUpdates(const std::vector<EdgeIx>& edgeDeletions, const std::vector<NodeUpdate>& updates);
 
 private:
