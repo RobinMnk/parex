@@ -39,9 +39,8 @@ struct NormalDistributionFunctor {
 __global__
 void lazyRandomWalkKernel(
         NodeIx numNodes,
-        const NodeIx* __restrict__ ranges,
         const NodeIx* __restrict__ neighbors,
-        const EdgeIx* __restrict__ degrees,
+        const NodeData* __restrict__ nodeData,
         const frac_t* __restrict__ old_dist,
         frac_t* __restrict__ dist,
         frac_t stay_weight
@@ -50,25 +49,23 @@ void lazyRandomWalkKernel(
     if (i >= numNodes) return;
 
     // early exit for inactive nodes
-    const NodeIx myDeg = __ldg(&degrees[i]);
-    if(myDeg == 0) return;
-
-    const NodeIx start = __ldg(&ranges[i]);
-    const NodeIx end   = __ldg(&ranges[i+1]);
+    const NodeData data = nodeData[i];
+    if(data.activeDegree == 0) return;
 
     frac_t incoming_sum = 0.0f;
 
-    // The #pragma unroll hint tells the compiler to optimize the loop
-    // for small segments, which are common in many graphs.
-#pragma unroll 4
-    for (NodeIx j = start; j < end; ++j) {
+    const EdgeIx rangeEnd = data.rangeStart + data.activeDegree;
+
+    for (NodeIx j = data.rangeStart; j < rangeEnd; ++j) {
         const NodeIx neighbor = neighbors[j];
-        const EdgeIx deg = degrees[neighbor];
-        if(deg != 0) {
+        const NodeData nbData = nodeData[neighbor]; // this now has to fetch 16 Bytes, even though we only need 4
+        if(nbData.activeDegree != 0) {
             // inactive nodes have deg == 0
-            incoming_sum += (__ldg(&old_dist[neighbor]) / static_cast<frac_t>(deg));
+            incoming_sum += (__ldg(&old_dist[neighbor]) / static_cast<frac_t>(nbData.activeDegree));
         }
     }
+
+    // TODO: Already Pack label and rw value into packedkeys for sorting!!
 
     dist[i] = (incoming_sum * (1.0f - stay_weight)) + (old_dist[i] * stay_weight);
 }
@@ -83,7 +80,7 @@ class RandomWalkManager {
     size_t temp_storage_bytes = 0;
 
 public:
-    RandomWalkManager(DevGraph gr, NodeIx n) : dist(n), old_dist(n), node_val(n), numNodes(n) {
+    RandomWalkManager(NodeIx n) : dist(n), old_dist(n), node_val(n), numNodes(n) {
         initRandomWalk(seed);
 //        prepare_cub(gr, static_cast<int>(n));
     }
@@ -92,16 +89,15 @@ public:
         if (d_temp_storage) cudaFree(d_temp_storage);
     }
 
-    void step(const DevGraph gr, cudaStream_t stream = nullptr) {
+    void step(GraphManager& gm, thrust::device_vector<NodeData>& partition, cudaStream_t stream = nullptr) {
         old_dist.swap(dist);
 
         unsigned int blocksPerGrid = (numNodes + threads - 1) / threads;
 
         lazyRandomWalkKernel<<<blocksPerGrid, threads, 0, stream>>>(
                 numNodes,
-                gr.ranges,
-                gr.neighbors,
-                gr.active_degrees,
+                thrust::raw_pointer_cast(gm.getNeighbors().data()),
+                thrust::raw_pointer_cast(partition.data()),
                 thrust::raw_pointer_cast(old_dist.data()),
                 thrust::raw_pointer_cast(dist.data()),
                 rw_stay

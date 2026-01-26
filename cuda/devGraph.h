@@ -5,13 +5,13 @@
 #ifndef PAREX_DEVGRAPH_H
 #define PAREX_DEVGRAPH_H
 
-
 #include <thrust/device_vector.h>
 #include <thrust/sort.h>
 #include <thrust/reduce.h>
 #include <thrust/fill.h>
 #include <thrust/scatter.h>
-#include "core/definitions.h"
+
+#include "types.h"
 
 struct DevGraph {
     const NodeIx numNodes;
@@ -81,24 +81,16 @@ void updateActiveNodesKernel(
     activeDegrees[i] = degree;
 }
 
-
 class GraphManager {
-
     // Graph
     thrust::device_vector<NodeIx> neighbors;
     thrust::device_vector<NodeIx> ranges;
-
-    // Partition
-    thrust::device_vector<EdgeIx> active_degrees;   // active_degree == 0 implies that a node is inactive
-    thrust::device_vector<NodeIx> labels;
-    thrust::device_vector<EdgeIx> volumes;
-    NodeIx numActiveClusters;
 
     // Update buffers
     thrust::device_vector<EdgeIx> edgeDeletionBuffer;
     thrust::device_vector<NodeUpdate> nodeUpdateBuffer;
 
-    void updateVolumes();
+//    void updateVolumes();
 
 public:
     NodeIx n{0};
@@ -111,47 +103,55 @@ public:
         m(graph.numEdges),
         neighbors(graph.edges),
         ranges(graph.ranges),
-        active_degrees(graph.numNodes),
-//        permutation(thrust::make_counting_iterator<NodeIx>(0), thrust::make_counting_iterator(n)),
-        labels(graph.numNodes, 0),
-        volumes{2 * graph.numEdges},
-        numActiveClusters{1},
+//        labels(graph.numNodes, 0),
+//        active_degrees(graph.numNodes),
+//        numActiveClusters{1},
+//        active_labels(graph.numNodes, 0),
+//        volumes{2 * graph.numEdges},
         edgeDeletionBuffer(2 * graph.numEdges),
         nodeUpdateBuffer(graph.numNodes)
     {
-        thrust::transform(ranges.begin() + 1, ranges.end(), ranges.begin(), active_degrees.begin(), thrust::minus<int>());
+
+//        permutation(thrust::make_counting_iterator<NodeIx>(0), thrust::make_counting_iterator(graph.numNodes)),
+//        thrust::transform(ranges.begin() + 1, ranges.end(), ranges.begin(), active_degrees.begin(), thrust::minus<int>());
+
+
         std::cout << "Copied Graph to GPU. \t" << neighbors.size() / 2 << " edges copied" << std::endl;
     }
 
     [[nodiscard]] DevGraph getView() const {
         return DevGraph{
-                n, m,
-                thrust::raw_pointer_cast(neighbors.data()),
-                thrust::raw_pointer_cast(ranges.data()),
-                thrust::raw_pointer_cast(active_degrees.data()),
-                thrust::raw_pointer_cast(labels.data()),
-                thrust::raw_pointer_cast(edgeDeletionBuffer.data()),
-                thrust::raw_pointer_cast(nodeUpdateBuffer.data())
+            n, m,
+            thrust::raw_pointer_cast(neighbors.data()),
+            thrust::raw_pointer_cast(ranges.data()),
         };
     }
 
-    thrust::device_vector<NodeIx>& getLabels() {
-        return labels;
+//    thrust::device_vector<NodeIx>& getLabels() {
+//        return labels;
+//    }
+
+    thrust::device_vector<NodeIx>& getRanges() {
+        return ranges;
     }
 
-    thrust::device_vector<EdgeIx>& getActiveDegrees() {
-        return active_degrees;
+    thrust::device_vector<NodeIx>& getNeighbors() {
+        return neighbors;
     }
 
-    thrust::device_vector<EdgeIx>& getVolumes() {
-        return volumes;
-    }
+//    thrust::device_vector<EdgeIx>& getActiveDegrees() {
+//        return active_degrees;
+//    }
+//
+//    thrust::device_vector<EdgeIx>& getVolumes() {
+//        return volumes;
+//    }
 
-    std::vector<EdgeIx> downloadDegrees() {
-        std::vector<EdgeIx> degrees(n);
-        thrust::copy(active_degrees.begin(), active_degrees.end(), degrees.begin());
-        return degrees;
-    }
+//    std::vector<EdgeIx> downloadDegrees() {
+//        std::vector<EdgeIx> degrees(n);
+//        thrust::copy(active_degrees.begin(), active_degrees.end(), degrees.begin());
+//        return degrees;
+//    }
 
     Graph downloadGraph() {
         Graph g(n, m);
@@ -161,60 +161,60 @@ public:
     }
 
     void updateLabels(std::vector<NodeIx>& nodeLabels, NodeIx activeClusters) {
-        labels = nodeLabels;
-        numActiveClusters = activeClusters;
-
-        unsigned int blocksPerGrid = (n + threads - 1) / threads;
-
-        updateActiveNodesKernel<<<blocksPerGrid, threads, 0, nullptr>>>(
-            n,
-            thrust::raw_pointer_cast(ranges.data()),
-            thrust::raw_pointer_cast(neighbors.data()),
-            thrust::raw_pointer_cast(labels.data()),
-            thrust::raw_pointer_cast(active_degrees.data())
-        );
-
-        updateVolumes();
+//        labels = nodeLabels;
+//        numActiveClusters = activeClusters;
+//
+//        unsigned int blocksPerGrid = (n + threads - 1) / threads;
+//
+//        updateActiveNodesKernel<<<blocksPerGrid, threads, 0, nullptr>>>(
+//            n,
+//            thrust::raw_pointer_cast(ranges.data()),
+//            thrust::raw_pointer_cast(neighbors.data()),
+//            thrust::raw_pointer_cast(labels.data()),
+//            thrust::raw_pointer_cast(active_degrees.data())
+//        );
+//
+//        updateVolumes();
     }
 };
 
-void GraphManager::updateVolumes() {
-    // Output vector
-    volumes.resize(numActiveClusters);
-
-    // --- Make copies for sorting ---
-    thrust::device_vector<NodeIx> labels_sorted = labels;
-    thrust::device_vector<float> degrees_sorted = active_degrees;
-
-    // --- Radix sort by labels ---
-    thrust::sort_by_key(
-            labels_sorted.begin(),
-            labels_sorted.end(),
-            degrees_sorted.begin()
-    );
-
-    // --- Reduce by key ---
-    thrust::device_vector<NodeIx> unique_labels(numActiveClusters);
-    thrust::device_vector<float> summed_degrees(numActiveClusters);
-
-    auto end = thrust::reduce_by_key(
-            labels_sorted.begin(),
-            labels_sorted.end(),
-            degrees_sorted.begin(),
-            unique_labels.begin(),
-            summed_degrees.begin()
-    );
-
-    const size_t num_unique = end.first - unique_labels.begin();
-
-    // --- Scatter results into volumes ---
-    thrust::scatter(
-            summed_degrees.begin(),
-            summed_degrees.begin() + num_unique,
-            unique_labels.begin(),
-            volumes.begin()
-    );
-}
+//void GraphManager::updateVolumes() {
+//    // Output vector
+//    volumes.resize(numActiveClusters);
+//
+//    // --- Make copies for sorting ---
+//    thrust::device_vector<NodeIx> labels_sorted = labels;
+//    thrust::device_vector<float> degrees_sorted = active_degrees;
+//
+//    // --- Radix sort by labels ---
+//    thrust::sort_by_key(
+//            labels_sorted.begin(),
+//            labels_sorted.end(),
+//            degrees_sorted.begin()
+//    );
+//
+//    // --- Reduce by key ---
+//    thrust::device_vector<NodeIx> unique_labels(numActiveClusters);
+//    thrust::device_vector<float> summed_degrees(numActiveClusters);
+//
+//    auto end = thrust::reduce_by_key(
+//            labels_sorted.begin(),
+//            labels_sorted.end(),
+//            degrees_sorted.begin(),
+//            unique_labels.begin(),
+//            summed_degrees.begin()
+//    );
+//
+//    const size_t num_unique = end.first - unique_labels.begin();
+//
+//    // --- Scatter results into volumes ---
+//    thrust::scatter(
+//            summed_degrees.begin(),
+//            summed_degrees.begin() + num_unique,
+//            unique_labels.begin(),
+//            volumes.begin()
+//    );
+//}
 
 
 

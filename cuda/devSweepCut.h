@@ -186,72 +186,72 @@ public:
 };
 
 void SweepCutManager::solve(GraphManager& gm, const thrust::device_vector<frac_t>& values) {
-    thrust::sequence(d_indices.begin(), d_indices.end());
-
-    // 1. Prepare Keys
-    thrust::transform(gm.getLabels().begin(), gm.getLabels().end(), values.begin(), d_packed_keys.begin(),
-                      [] __device__ (NodeIx l, float v) {
-                          return ((uint64_t)l << 32) | (uint64_t)floatToOrderedInt(v);
-                      });
-
-    // 2. Prepare Data for ONE SINGLE SORT
-    // Copy original degrees into d_volumes BEFORE sorting
-    thrust::copy(gm.getActiveDegrees().begin(), gm.getActiveDegrees().end(), d_volumes.begin());
-
-    // Zip everything that needs to stay synchronized with the keys
-    auto begin_data = thrust::make_zip_iterator(thrust::make_tuple(
-            nodeContributions.begin(),
-            d_volumes.begin(),
-            d_indices.begin())
-    );
-
-    // SORT ONCE - This moves everything in the tuple to match the new key order
-    thrust::sort_by_key(d_packed_keys.begin(), d_packed_keys.end(), begin_data);
-
-    // 3. Extract sorted labels from the now-sorted keys
-    thrust::transform(d_packed_keys.begin(), d_packed_keys.end(), d_sorted_labels.begin(),
-                      [] __device__ (uint64_t key) { return (NodeIx)(key >> 32); });
-
-    // 4. Prefix Sums (Both are now aligned with d_sorted_labels)
-
-    // Accumulate Cut Edges (Scan nodeContributions into d_prefix_weights)
-    thrust::inclusive_scan_by_key(d_sorted_labels.begin(), d_sorted_labels.end(),
-                                  nodeContributions.begin(), d_prefix_weights.begin());
-
-    // Accumulate Volumes (Scan d_volumes in-place)
-    thrust::inclusive_scan_by_key(d_sorted_labels.begin(), d_sorted_labels.end(),
-                                  d_volumes.begin(), d_volumes.begin());
-
-    // 5. Final Conductance Calculation
-    EdgeIx* clusterVolumesPtr = thrust::raw_pointer_cast(gm.getVolumes().data());
-
-    thrust::transform(d_prefix_weights.begin(), d_prefix_weights.end(), // Prefix Cut
-                      thrust::make_zip_iterator(thrust::make_tuple(d_volumes.begin(), d_sorted_labels.begin())), // Prefix Vol + Label
-                      d_sweepCuts.begin(), // Result Ratio
-                        [clusterVolumesPtr] __device__ (float cutSize, thrust::tuple<EdgeIx, NodeIx> t) {
-                                EdgeIx prefixVol = thrust::get<0>(t);
-                                NodeIx clusterId = thrust::get<1>(t);
-                                EdgeIx totalVol  = clusterVolumesPtr[clusterId];
-
-                                // Denominator: min(vol, totalVol - vol)
-                                EdgeIx denom = (prefixVol < totalVol - prefixVol) ? prefixVol : (totalVol - prefixVol);
-
-                                return (denom > 0) ? (cutSize / (float)denom) : 1e30f;
-                            }
-    );
-
-
-    auto ratio_index_begin = thrust::make_zip_iterator(thrust::make_tuple(d_sweepCuts.begin(), d_indices.begin()));
-    auto output_begin = thrust::make_zip_iterator(thrust::make_tuple(d_min_ratios.begin(), d_min_indices.begin()));
-
-    thrust::reduce_by_key(
-            d_sorted_labels.begin(), d_sorted_labels.end(), // Keys
-            ratio_index_begin,                             // Values (Ratio, Index)
-            d_unique_labels.begin(),                       // Output Keys
-            output_begin,                                  // Output Values
-            thrust::equal_to<NodeIx>(),              // Key Binary Predicate
-            ArgMinOp()                                     // Reduction Operator
-    );
+//    thrust::sequence(d_indices.begin(), d_indices.end());
+//
+//    // 1. Prepare Keys
+//    thrust::transform(gm.getLabels().begin(), gm.getLabels().end(), values.begin(), d_packed_keys.begin(),
+//                      [] __device__ (NodeIx l, float v) {
+//                          return ((uint64_t)l << 32) | (uint64_t)floatToOrderedInt(v);
+//                      });
+//
+//    // 2. Prepare Data for ONE SINGLE SORT
+//    // Copy original degrees into d_volumes BEFORE sorting
+//    thrust::copy(gm.getActiveDegrees().begin(), gm.getActiveDegrees().end(), d_volumes.begin());
+//
+//    // Zip everything that needs to stay synchronized with the keys
+//    auto begin_data = thrust::make_zip_iterator(thrust::make_tuple(
+//            nodeContributions.begin(),
+//            d_volumes.begin(),
+//            d_indices.begin())
+//    );
+//
+//    // SORT ONCE - This moves everything in the tuple to match the new key order
+//    thrust::sort_by_key(d_packed_keys.begin(), d_packed_keys.end(), begin_data);
+//
+//    // 3. Extract sorted labels from the now-sorted keys
+//    thrust::transform(d_packed_keys.begin(), d_packed_keys.end(), d_sorted_labels.begin(),
+//                      [] __device__ (uint64_t key) { return (NodeIx)(key >> 32); });
+//
+//    // 4. Prefix Sums (Both are now aligned with d_sorted_labels)
+//
+//    // Accumulate Cut Edges (Scan nodeContributions into d_prefix_weights)
+//    thrust::inclusive_scan_by_key(d_sorted_labels.begin(), d_sorted_labels.end(),
+//                                  nodeContributions.begin(), d_prefix_weights.begin());
+//
+//    // Accumulate Volumes (Scan d_volumes in-place)
+//    thrust::inclusive_scan_by_key(d_sorted_labels.begin(), d_sorted_labels.end(),
+//                                  d_volumes.begin(), d_volumes.begin());
+//
+//    // 5. Final Conductance Calculation
+//    EdgeIx* clusterVolumesPtr = thrust::raw_pointer_cast(gm.getVolumes().data());
+//
+//    thrust::transform(d_prefix_weights.begin(), d_prefix_weights.end(), // Prefix Cut
+//                      thrust::make_zip_iterator(thrust::make_tuple(d_volumes.begin(), d_sorted_labels.begin())), // Prefix Vol + Label
+//                      d_sweepCuts.begin(), // Result Ratio
+//                        [clusterVolumesPtr] __device__ (float cutSize, thrust::tuple<EdgeIx, NodeIx> t) {
+//                                EdgeIx prefixVol = thrust::get<0>(t);
+//                                NodeIx clusterId = thrust::get<1>(t);
+//                                EdgeIx totalVol  = clusterVolumesPtr[clusterId];
+//
+//                                // Denominator: min(vol, totalVol - vol)
+//                                EdgeIx denom = (prefixVol < totalVol - prefixVol) ? prefixVol : (totalVol - prefixVol);
+//
+//                                return (denom > 0) ? (cutSize / (float)denom) : 1e30f;
+//                            }
+//    );
+//
+//
+//    auto ratio_index_begin = thrust::make_zip_iterator(thrust::make_tuple(d_sweepCuts.begin(), d_indices.begin()));
+//    auto output_begin = thrust::make_zip_iterator(thrust::make_tuple(d_min_ratios.begin(), d_min_indices.begin()));
+//
+//    thrust::reduce_by_key(
+//            d_sorted_labels.begin(), d_sorted_labels.end(), // Keys
+//            ratio_index_begin,                             // Values (Ratio, Index)
+//            d_unique_labels.begin(),                       // Output Keys
+//            output_begin,                                  // Output Values
+//            thrust::equal_to<NodeIx>(),              // Key Binary Predicate
+//            ArgMinOp()                                     // Reduction Operator
+//    );
 }
 
 

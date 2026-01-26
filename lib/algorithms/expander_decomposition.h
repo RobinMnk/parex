@@ -60,7 +60,7 @@ struct Config {
 //            ix++;
 //        }
 //
-//        // TODO: tell GPU cluster updates
+//        // tell GPU cluster updates
 //        // needs: new labels, cluster volumes, num clusters,
 //    }
 //

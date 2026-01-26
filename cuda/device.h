@@ -8,6 +8,7 @@
 #include "interface.h"
 #include "devRandomWalk.h"
 #include "devSweepCut.h"
+#include "devPartition.h"
 
 template<typename T>
 inline void copyToDevice(const std::vector<T>& elements, T* devTarget, cudaStream_t stream) {
@@ -18,6 +19,7 @@ inline void copyToDevice(const std::vector<T>& elements, T* devTarget, cudaStrea
 
 class CudaDeviceManager::Impl {
     std::unique_ptr<GraphManager> gm;
+    std::unique_ptr<DevPartition> pt;
     std::unique_ptr<RandomWalkManager> rw;
     std::unique_ptr<SweepCutManager> sc;
 
@@ -25,23 +27,26 @@ public:
 
     void initialize(const Graph& graph) {
         gm.reset();
+        pt.reset();
         rw.reset();
         sc.reset();
 
         gm = std::make_unique<GraphManager>(graph);
-        rw = std::make_unique<RandomWalkManager>(gm->getView(), graph.numNodes);
+        pt = std::make_unique<DevPartition>(*gm);
+        rw = std::make_unique<RandomWalkManager>(graph.numNodes);
         sc = std::make_unique<SweepCutManager>(graph.numNodes);
     }
 
     void iterateRandomWalk() {
-        rw->step(gm->getView());
+        rw->step(*gm, pt->getPartition());
     }
 
     std::vector<frac_t> readRandomWalkValues() {
         return rw->valuesToCPU();
     }
+
     std::vector<EdgeIx> downloadDegrees() {
-        return gm->downloadDegrees();
+        return {};
     }
 
     void computeSweepCuts() {
