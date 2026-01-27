@@ -28,8 +28,10 @@ struct InitFunctor {
 };
 
 
-class DevPartition {
-    thrust::device_vector<NodeData> partition;
+class PartitionManager {
+    thrust::device_vector<NodeData> partition1;
+    thrust::device_vector<NodeData> partition2;
+    cub::DoubleBuffer<NodeData> partition;
 
     NodeIx numActiveClusters;
     thrust::device_vector<NodeIx> activeLabels;
@@ -38,17 +40,34 @@ class DevPartition {
 
 public:
 
-    explicit DevPartition(GraphManager& gm) : partition(gm.n), numActiveClusters{1}, activeLabels(gm.n, 0), volumes(gm.n, 1) {
+    explicit PartitionManager(GraphManager& gm) :
+        partition1(gm.n),
+        partition2(gm.n),
+        partition(thrust::raw_pointer_cast(partition1.data()),
+            thrust::raw_pointer_cast(partition2.data())),
+        numActiveClusters{1},
+        activeLabels(gm.n, 0),
+        volumes(gm.n, 1)
+    {
         thrust::transform(
             thrust::make_counting_iterator<NodeIx>(0),
             thrust::make_counting_iterator(gm.n),
-            partition.begin(),
+            partition1.begin(),
             InitFunctor(thrust::raw_pointer_cast(gm.getRanges().data()))
         );
     }
 
-    thrust::device_vector<NodeData>& getPartition() {
+    NodeData* getPartition() {
+        return partition.Current();
+    }
+
+    cub::DoubleBuffer<NodeData>& getPartitionView() {
         return partition;
+    }
+
+
+    thrust::device_vector<EdgeIx>& getVolumes() {
+        return volumes;
     }
 
 };

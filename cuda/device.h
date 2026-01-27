@@ -19,7 +19,7 @@ inline void copyToDevice(const std::vector<T>& elements, T* devTarget, cudaStrea
 
 class CudaDeviceManager::Impl {
     std::unique_ptr<GraphManager> gm;
-    std::unique_ptr<DevPartition> pt;
+    std::unique_ptr<PartitionManager> pt;
     std::unique_ptr<RandomWalkManager> rw;
     std::unique_ptr<SweepCutManager> sc;
 
@@ -32,13 +32,13 @@ public:
         sc.reset();
 
         gm = std::make_unique<GraphManager>(graph);
-        pt = std::make_unique<DevPartition>(*gm);
+        pt = std::make_unique<PartitionManager>(*gm);
         rw = std::make_unique<RandomWalkManager>(graph.numNodes);
-        sc = std::make_unique<SweepCutManager>(graph.numNodes);
+        sc = std::make_unique<SweepCutManager>(graph.numNodes, pt->getPartitionView());
     }
 
     void iterateRandomWalk() {
-        rw->step(*gm, pt->getPartition());
+        rw->step(*gm, pt->getPartition(), sc->getKeyBuffer());
     }
 
     std::vector<frac_t> readRandomWalkValues() {
@@ -50,7 +50,7 @@ public:
     }
 
     void computeSweepCuts() {
-        sc->compute(*gm, rw->randomWalkValues());
+        sc->compute(*gm, rw->randomWalkValues(), *pt);
     }
 
     AllSweepCuts getSweepCuts() {

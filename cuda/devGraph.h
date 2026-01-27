@@ -103,18 +103,10 @@ public:
         m(graph.numEdges),
         neighbors(graph.edges),
         ranges(graph.ranges),
-//        labels(graph.numNodes, 0),
-//        active_degrees(graph.numNodes),
-//        numActiveClusters{1},
-//        active_labels(graph.numNodes, 0),
-//        volumes{2 * graph.numEdges},
         edgeDeletionBuffer(2 * graph.numEdges),
         nodeUpdateBuffer(graph.numNodes)
     {
-
-//        permutation(thrust::make_counting_iterator<NodeIx>(0), thrust::make_counting_iterator(graph.numNodes)),
 //        thrust::transform(ranges.begin() + 1, ranges.end(), ranges.begin(), active_degrees.begin(), thrust::minus<int>());
-
 
         std::cout << "Copied Graph to GPU. \t" << neighbors.size() / 2 << " edges copied" << std::endl;
     }

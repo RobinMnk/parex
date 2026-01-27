@@ -6,6 +6,7 @@
 #define PAREX_DEVSWEEPCUT_H
 
 #include "devGraph.h"
+#include "devPartition.h"
 
 #include <thrust/device_vector.h>
 #include <thrust/sort.h>
@@ -57,30 +58,28 @@ void nodeDiffKernel(
 __global__
 void nodeDiffKernel_Sparse(
         NodeIx numNodes,
-        const NodeIx* __restrict__ ranges,
         const NodeIx* __restrict__ neighbors,
-        const NodeIx* __restrict__ labels,
+        const NodeData* __restrict__ nodeData,
         const frac_t* __restrict__ values,
         frac_t* __restrict__ contributions
 ) {
     NodeIx i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= numNodes) return;
 
-    const NodeIx start = __ldg(&ranges[i]);
-    const NodeIx end   = __ldg(&ranges[i+1]);
+    // early exit for inactive nodes
+    const NodeData data = nodeData[i];
+    if(data.activeDegree == 0) return;
 
-    if (start == end) return; // Equivalent to degree == 0
-
-    const NodeIx myLabel = __ldg(&labels[i]);
-    const frac_t myVal   = __ldg(&values[i]);
+    const frac_t myVal = __ldg(&values[i]);
 
     frac_t nodeContribution = 0.0f;
+    const EdgeIx rangeEnd = data.rangeStart + data.activeDegree;
 
-#pragma unroll 4
-    for (NodeIx j = start; j < end; ++j) {
+    for (NodeIx j = data.rangeStart; j < rangeEnd; ++j) {
         const NodeIx neighbor = __ldg(&neighbors[j]);
+        const NodeData nbData = nodeData[neighbor];         // this has to fetch 32 Bytes, even though we only need 4
 
-        if (__ldg(&labels[neighbor]) == myLabel) {
+        if (nbData.label == data.label) {
             // only consider edges that stay within the same cluster
             const frac_t otherVal = __ldg(&values[neighbor]);
             // if otherVal < myVal -> then the edge goes "left" in the sweep cut
@@ -90,67 +89,100 @@ void nodeDiffKernel_Sparse(
 
     contributions[i] = nodeContribution;
 }
+// This need all random walk values done -> has to be computed after!
 
-// Helper to convert float to a sortable integer (for Radix Sort)
-__host__ __device__
-uint32_t floatToOrderedInt(float v) {
-    uint32_t i = *((uint32_t*)&v);
-    uint32_t mask = (i >> 31 != 0) ? 0xffffffff : 0x80000000;
-    return i ^ mask;
-}
 
-// Custom operator to find the minimum ratio and keep the associated index
-struct ArgMinOp {
-    typedef thrust::tuple<float, NodeIx> ValueIndex;
-    __host__ __device__ ValueIndex operator()(const ValueIndex& a, const ValueIndex& b) const {
-        // Return the tuple with the smaller ratio
-        return (thrust::get<0>(a) < thrust::get<0>(b)) ? a : b;
+struct PrefixValues {
+    EdgeIx edgeDiff;
+    EdgeIx volume;
+
+    __device__ PrefixValues operator+(const PrefixValues& other) const {
+        return {edgeDiff + other.edgeDiff, volume + other.volume};
     }
 };
+
+struct SweepCutData {
+    float sparsity;
+    int offset;
+};
+
 
 class SweepCutManager {
     thrust::device_vector<frac_t> nodeContributions;
 
     // Buffers
-    thrust::device_vector<uint64_t> d_packed_keys;
-    thrust::device_vector<NodeIx> d_indices;
-    thrust::device_vector<NodeIx> d_sorted_labels;
-    thrust::device_vector<float> d_prefix_weights;
-    thrust::device_vector<float> d_sweepCuts;
-    thrust::device_vector<float> d_volumes;
+    thrust::device_vector<uint64_t> packedKeysIn;
+    thrust::device_vector<uint64_t> packedKeysOut;
+    cub::DoubleBuffer<uint64_t> packedKeys;
+
+
+    thrust::device_vector<PrefixValues> prefixSums;
+
+
+    // CUB Buffers
+    size_t temp_storage_bytes = 0;
+    void *d_temp_storage = nullptr;
+
 
     // Output
     thrust::device_vector<NodeIx> d_unique_labels;
-    thrust::device_vector<NodeIx> d_min_indices;
-    thrust::device_vector<float> d_min_ratios;
+    thrust::device_vector<SweepCutData> sweepCuts;
 
-//    std::vector<EdgeIx> prefixSums;
-//    std::vector<EdgeIx> cutVolumes;
 
-    void prepareNodeContributions(const DevGraph gr, const thrust::device_vector<frac_t>& values, cudaStream_t stream = nullptr) {
-        unsigned int blocksPerGrid = (gr.numNodes + threads - 1) / threads;
+    void prepareNodeContributions(
+            GraphManager &gm,
+            const thrust::device_vector<frac_t> &values,
+            PartitionManager& pm,
+            cudaStream_t stream = nullptr
+    ) {
+        unsigned int blocksPerGrid = (gm.n + threads - 1) / threads;
 
         nodeDiffKernel_Sparse<<<blocksPerGrid, threads, 0, stream>>>(
-                gr.numNodes,
-                gr.ranges,
-                gr.neighbors,
-                gr.labels,
+                gm.n,
+                thrust::raw_pointer_cast(gm.getNeighbors().data()),
+                pm.getPartition(),
                 thrust::raw_pointer_cast(values.data()),
                 thrust::raw_pointer_cast(nodeContributions.data())
         );
     }
 
+    void initializeCUB(NodeIx numNodes, cub::DoubleBuffer<NodeData> partitionView) {
+        cub::DeviceRadixSort::SortPairs(
+            nullptr, temp_storage_bytes,
+            packedKeys,
+            partitionView,
+            static_cast<int>(numNodes)
+        );
+
+        cudaMalloc(&d_temp_storage, temp_storage_bytes);
+    }
+
 public:
-    explicit SweepCutManager(NodeIx n) : nodeContributions(n), d_packed_keys(n), d_indices(n), d_sorted_labels(n), d_prefix_weights(n), d_sweepCuts(n),
-                                         d_volumes(n), d_unique_labels(n), d_min_indices(n), d_min_ratios(n)  {}
+    explicit SweepCutManager(NodeIx n, cub::DoubleBuffer<NodeData> partitionView) :
+        nodeContributions(n),
+        packedKeysIn(n),
+        packedKeysOut(n),
+        packedKeys(thrust::raw_pointer_cast(packedKeysIn.data()),
+                   thrust::raw_pointer_cast(packedKeysOut.data())),
+        prefixSums(n),
+        d_unique_labels(n),
+        sweepCuts(n)
+    {
+        initializeCUB(n, partitionView);
+    }
 
 
-    void solve(GraphManager& gm, const thrust::device_vector<frac_t>& values);
+    void solve(GraphManager& gm, PartitionManager& pm);
 
-    void compute(GraphManager& gm, const thrust::device_vector<frac_t>& values, cudaStream_t stream = nullptr) {
-        prepareNodeContributions(gm.getView(), values, stream);
+    void compute(
+        GraphManager& gm,
+        const thrust::device_vector<frac_t> &values,
+        PartitionManager& pm,
+        cudaStream_t stream = nullptr
+     ) {
+        prepareNodeContributions(gm, values, pm, stream);
         cudaStreamSynchronize(stream);
-        solve(gm, values);
+        solve(gm, pm);
     }
 
     AllSweepCuts resultToCPU(NodeIx numClusters) {
@@ -158,10 +190,129 @@ public:
         std::vector<NodeIx> offsets(numClusters);
         std::vector<float> sparsities(numClusters);
         thrust::copy(d_unique_labels.begin(), d_unique_labels.begin() + numClusters, clusterIds.begin());
-        thrust::copy(d_min_indices.begin(), d_min_indices.begin() + numClusters, offsets.begin());
-        thrust::copy(d_min_ratios.begin(), d_min_ratios.begin() + numClusters, sparsities.begin());
-        return { clusterIds, offsets, sparsities };
+//        thrust::copy(d_min_indices.begin(), d_min_indices.begin() + numClusters, offsets.begin());
+//        thrust::copy(d_min_ratios.begin(), d_min_ratios.begin() + numClusters, sparsities.begin());
+        return {clusterIds, offsets, sparsities};
     }
+
+    uint64_t* getKeyBuffer() {
+        return packedKeys.Current();
+    }
+
+};
+
+
+struct LabelExtractor {
+    __device__
+    inline NodeIx operator()(uint64_t k) const {
+        return static_cast<NodeIx>(k >> 32);
+    }
+};
+
+struct ArgMinOp {
+    __host__ __device__
+    SweepCutData operator()(const SweepCutData& a, const SweepCutData& b) const {
+        return (a.sparsity < b.sparsity) ? a : b;
+    }
+};
+
+void SweepCutManager::solve(GraphManager& gm, PartitionManager& pm) {
+
+    cub::DeviceRadixSort::SortPairs(
+        d_temp_storage, temp_storage_bytes,
+        packedKeys,
+        pm.getPartitionView(),
+        static_cast<int>(gm.n)
+    );
+
+    NodeData* sortedData = pm.getPartition();
+    uint64_t* sortedKeys = packedKeys.Current();
+
+    /**
+     * - Extract edgeDiff and activeDegree from every node
+     * - Perform separate prefix sum on both
+     * - save outcome to prefixSums
+     */
+    thrust::inclusive_scan_by_key(
+        thrust::device,
+        // Keys
+        thrust::make_transform_iterator(sortedKeys, LabelExtractor()),
+        thrust::make_transform_iterator(sortedKeys + gm.n, LabelExtractor()),
+        // Values (Input)
+        thrust::make_transform_iterator(sortedData, [] __device__(const NodeData& n) -> PrefixValues {
+            return {n.edgeDiff, n.activeDegree};
+        }),
+        // Output
+        prefixSums.begin(),
+        thrust::equal_to<NodeIx>(),
+        thrust::plus<PrefixValues>()
+    );
+
+
+    // 1. Get raw pointers for the lambda capture
+    EdgeIx* clusterVolumesPtr       = thrust::raw_pointer_cast(pm.getVolumes().data());
+    PrefixValues* prefixSumsPtr     = thrust::raw_pointer_cast(prefixSums.data());
+
+    // 2. Define the Conductance + Indexing logic in a single iterator
+    auto conductance_index_iter = thrust::make_transform_iterator(
+            thrust::make_counting_iterator<int>(0),
+            [clusterVolumesPtr, sortedKeys, prefixSumsPtr] __device__ (int i) -> SweepCutData {
+                const uint64_t key = sortedKeys[i];
+                const NodeIx label = static_cast<NodeIx>(key >> 32);
+                const EdgeIx totalVol  = clusterVolumesPtr[label];
+
+                const PrefixValues pv = prefixSumsPtr[i];
+                const EdgeIx edgeDiff = pv.edgeDiff;
+                const EdgeIx prefixVol = pv.volume;
+
+                // min(vol, totalVol - vol)
+                const EdgeIx denom = (prefixVol < totalVol - prefixVol) ? prefixVol : (totalVol - prefixVol);
+                const float sparsity  = (denom > 0) ? (static_cast<float>(edgeDiff) / static_cast<float>(denom)) : 1e30f;
+
+                return { sparsity , i };
+            }
+    );
+
+// 3. One-pass Reduction to find the best cut per label
+    thrust::reduce_by_key(
+            thrust::device,
+            // Keys
+            thrust::make_transform_iterator(sortedKeys, LabelExtractor()),
+            thrust::make_transform_iterator(sortedKeys + gm.n, LabelExtractor()),
+            // Values
+            conductance_index_iter,
+            // Output Label
+            d_unique_labels.begin(),
+            // Output Values
+            sweepCuts.begin(),
+            thrust::equal_to<NodeIx>(),
+            ArgMinOp()
+    );
+}
+
+
+
+//    thrust::inclusive_scan_by_key(
+//            thrust::device,
+//        thrust::make_transform_iterator(sortedKeys, LabelExtractor()),
+//        thrust::make_transform_iterator(sortedKeys + gm.n, LabelExtractor()),
+//        thrust::make_transform_iterator(sortedData, [] __device__(const NodeData& n) { return n.edgeDiff; }),
+//        prefixContributions.begin()
+//    );
+//
+//    thrust::inclusive_scan_by_key(
+//            thrust::device,
+//            thrust::make_transform_iterator(sortedKeys, LabelExtractor()),
+//            thrust::make_transform_iterator(sortedKeys + gm.n, LabelExtractor()),
+//            thrust::make_transform_iterator(sortedData, [] __device__(const NodeData& n) { return n.activeDegree; }),
+//            prefixVolumes.begin()
+//    );
+
+    // 4. Final Conductance & ArgMin
+    // Use the same reduction logic from your original code,
+    // but reading from d_prefix_weights and d_prefix_volumes
+//    computeConductanceAndReduce(gm, sortedKeys);
+
 
 //    void inspect(std::vector<EdgeIx>& pS, std::vector<EdgeIx>& s) {
 //        prefixSums = pS;
@@ -183,9 +334,9 @@ public:
 //        }
 //        std::cout << ((sparsities == comp) ? " Ratios fine." : "ERROR: Ratios BROKEN!!!") << std::endl;
 //    }
-};
+//};
 
-void SweepCutManager::solve(GraphManager& gm, const thrust::device_vector<frac_t>& values) {
+//void SweepCutManager::solve(GraphManager& gm, const thrust::device_vector<frac_t>& values) {
 //    thrust::sequence(d_indices.begin(), d_indices.end());
 //
 //    // 1. Prepare Keys
@@ -252,7 +403,7 @@ void SweepCutManager::solve(GraphManager& gm, const thrust::device_vector<frac_t
 //            thrust::equal_to<NodeIx>(),              // Key Binary Predicate
 //            ArgMinOp()                                     // Reduction Operator
 //    );
-}
+//}
 
 
 

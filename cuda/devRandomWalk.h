@@ -36,6 +36,17 @@ struct NormalDistributionFunctor {
     }
 };
 
+__device__
+inline uint64_t packKey(NodeIx label, float v) {
+    uint32_t i = __float_as_uint(v);
+
+    uint32_t mask = (i & 0x80000000) ? 0xffffffff : 0x80000000;
+    uint32_t ordered = i ^ mask;
+
+    // Shift label to high bits, place ordered float in low bits
+    return (static_cast<uint64_t>(label) << 32) | ordered;
+}
+
 __global__
 void lazyRandomWalkKernel(
         NodeIx numNodes,
@@ -43,6 +54,7 @@ void lazyRandomWalkKernel(
         const NodeData* __restrict__ nodeData,
         const frac_t* __restrict__ old_dist,
         frac_t* __restrict__ dist,
+        uint64_t* __restrict__ packedKeys,
         frac_t stay_weight
 ) {
     NodeIx i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -53,21 +65,24 @@ void lazyRandomWalkKernel(
     if(data.activeDegree == 0) return;
 
     frac_t incoming_sum = 0.0f;
-
     const EdgeIx rangeEnd = data.rangeStart + data.activeDegree;
 
     for (NodeIx j = data.rangeStart; j < rangeEnd; ++j) {
-        const NodeIx neighbor = neighbors[j];
-        const NodeData nbData = nodeData[neighbor]; // this now has to fetch 16 Bytes, even though we only need 4
+        const NodeIx neighbor = __ldg(&neighbors[j]);
+        const NodeData nbData = nodeData[neighbor];         // this has to fetch 32 Bytes, even though we only need 4
         if(nbData.activeDegree != 0) {
             // inactive nodes have deg == 0
             incoming_sum += (__ldg(&old_dist[neighbor]) / static_cast<frac_t>(nbData.activeDegree));
         }
     }
 
-    // TODO: Already Pack label and rw value into packedkeys for sorting!!
+    const frac_t nodeVal = (incoming_sum * (1.0f - stay_weight)) + (old_dist[i] * stay_weight);
 
-    dist[i] = (incoming_sum * (1.0f - stay_weight)) + (old_dist[i] * stay_weight);
+    dist[i] = nodeVal;
+
+    // FOR SWEEP CUT:
+    // Already Pack label and rw value into packedKeys for sorting!!
+    packedKeys[i] = packKey(data.label, nodeVal);
 }
 
 class RandomWalkManager {
@@ -80,7 +95,7 @@ class RandomWalkManager {
     size_t temp_storage_bytes = 0;
 
 public:
-    RandomWalkManager(NodeIx n) : dist(n), old_dist(n), node_val(n), numNodes(n) {
+    explicit RandomWalkManager(NodeIx n) : dist(n), old_dist(n), node_val(n), numNodes(n) {
         initRandomWalk(seed);
 //        prepare_cub(gr, static_cast<int>(n));
     }
@@ -89,7 +104,11 @@ public:
         if (d_temp_storage) cudaFree(d_temp_storage);
     }
 
-    void step(GraphManager& gm, thrust::device_vector<NodeData>& partition, cudaStream_t stream = nullptr) {
+    void step(GraphManager& gm,
+          NodeData* partitionPtr,
+          uint64_t* packedKeysPtr,
+          cudaStream_t stream = nullptr
+    ) {
         old_dist.swap(dist);
 
         unsigned int blocksPerGrid = (numNodes + threads - 1) / threads;
@@ -97,9 +116,10 @@ public:
         lazyRandomWalkKernel<<<blocksPerGrid, threads, 0, stream>>>(
                 numNodes,
                 thrust::raw_pointer_cast(gm.getNeighbors().data()),
-                thrust::raw_pointer_cast(partition.data()),
+                partitionPtr,
                 thrust::raw_pointer_cast(old_dist.data()),
                 thrust::raw_pointer_cast(dist.data()),
+                packedKeysPtr,
                 rw_stay
         );
     }
