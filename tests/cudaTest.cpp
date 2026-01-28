@@ -73,19 +73,52 @@ TEST_F(CudaTest, SweepCutTest) {
     rw.setData(rwData);
     Partition part(&graph);
 
-    SweepCut expected = part.sweepCut(0, rwData);
+    // take 20 steps
+    for(int i = 0; i < 20; i++) {
+        rw.iterate(part, {0});
+        cuda.iterateRandomWalk();
+    }
+
+    auto y = cuda.readRandomWalkValues();
+    auto z = rw.values();
+
+    for (NodeIx nix = 0; nix < graph.numNodes; nix++) {
+        ASSERT_NEAR(y[nix], z[nix], 0.00001);
+    }
+
+    SweepCut expected = part.sweepCut(0, z);
 
     cuda.computeSweepCuts();
     AllSweepCuts result = cuda.readSweepCuts();
 
+    std::vector<NodeData> pt = cuda.downloadPartition();
+
+    NodeIx n = graph.numNodes;
+
+    for(int j = 0; j < 10; j++) {
+        std::cout << "CPU:  " << expected.pS[j].edgeDiff << " / " << expected.pS[j].volume << " (" << expected.pS[j].nix << ")" << "\t\t"
+                << "GPU:  " << result.prefixSums[j].edgeDiff << " / " << result.prefixSums[j].volume << " (" << result.prefixSums[j].nix << ")" << "\t\t"
+                << "GPU:  " << pt[j].edgeDiff << " / " << pt[j].degree << " (" << pt[j].nix << ")"  << std::endl;
+    }
+
+    for(int j = 0; j < n; j++) {
+//        EXPECT_EQ(result.prefixSums[j].volume, expected.pS[j].volume);
+        ASSERT_EQ(pt[j].label, 0);
+        ASSERT_EQ(pt[j].nix, j);
+    }
+
+    EXPECT_EQ(expected.pS, result.prefixSums);
+
+    std::cout << result.cuts[0].offset << std::endl;
+
+
     EXPECT_EQ(result.clusterIds.size(), 1);
-    EXPECT_EQ(result.offsets.size(), 1);
-    EXPECT_EQ(result.sparsities.size(), 1);
+    EXPECT_EQ(result.cuts.size(), 1);
 
     EXPECT_EQ(result.clusterIds[0], 0);
 
 //    EXPECT_EQ(result.offsets[0], expected.offset);
-    EXPECT_NEAR(result.sparsities[0], expected.sparsity, 0.0000001);
+    EXPECT_NEAR(result.cuts[0].sparsity, expected.sparsity, 0.0000001);
 }
 
 
@@ -108,13 +141,12 @@ TEST_P(CudaTest, SweepCut) {
         AllSweepCuts result = cuda.readSweepCuts();
 
         EXPECT_EQ(result.clusterIds.size(), 1);
-        EXPECT_EQ(result.offsets.size(), 1);
-        EXPECT_EQ(result.sparsities.size(), 1);
+        EXPECT_EQ(result.cuts.size(), 1);
 
         EXPECT_EQ(result.clusterIds[0], 0);
 
 //        EXPECT_EQ(result.offsets[0], expected.offset);
-        EXPECT_NEAR(result.sparsities[0], expected.sparsity, 0.00000001);
+        EXPECT_NEAR(result.cuts[0].sparsity, expected.sparsity, 0.00000001);
     }
 }
 //

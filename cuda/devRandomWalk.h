@@ -14,7 +14,7 @@
 #include <curand_kernel.h>
 
 #include <cub/cub.cuh>
-
+#include <cassert>
 
 #include "devGraph.h"
 
@@ -29,12 +29,20 @@ struct NormalDistributionFunctor {
 
     __host__ __device__
     frac_t operator()(const NodeIx idx) const {
-        thrust::default_random_engine rng(base_seed);
-        thrust::normal_distribution<frac_t> dist;
-        rng.discard(idx);
-        return dist(rng);
+//        thrust::default_random_engine rng(base_seed);
+//        thrust::normal_distribution<frac_t> dist;
+//        rng.discard(idx);
+//        return dist(rng);
+        return static_cast<frac_t>(idx) / 4096;
     }
 };
+
+__host__ __device__
+uint32_t floatToOrderedInt(float v) {
+    uint32_t i = *((uint32_t*)&v);
+    uint32_t mask = (i >> 31 != 0) ? 0xffffffff : 0x80000000;
+    return i ^ mask;
+}
 
 __device__
 inline uint64_t packKey(NodeIx label, float v) {
@@ -62,15 +70,17 @@ void lazyRandomWalkKernel(
 
     // early exit for inactive nodes
     const NodeData data = nodeData[i];
-    if(data.activeDegree == 0) return;
+//    if(data.label < 0) return; // label < 0 considered inactive, but label is currently unsigned
+
+    assert(data.nix == i && "nix mismatch!");
 
     frac_t incoming_sum = 0.0f;
-    const EdgeIx rangeEnd = data.rangeStart + data.activeDegree;
+    const EdgeIx rangeEnd = data.rangeStart + data.degree;
 
     for (NodeIx j = data.rangeStart; j < rangeEnd; ++j) {
         const NodeIx neighbor = __ldg(&neighbors[j]);
-        const NodeData nbData = nodeData[neighbor];         // this has to fetch 32 Bytes, even though we only need 4
-        if(nbData.activeDegree != 0) {
+        const NodeData nbData = nodeData[neighbor];
+        if(nbData.label == data.label && nbData.activeDegree != 0) {
             // inactive nodes have deg == 0
             incoming_sum += (__ldg(&old_dist[neighbor]) / static_cast<frac_t>(nbData.activeDegree));
         }
@@ -83,6 +93,8 @@ void lazyRandomWalkKernel(
     // FOR SWEEP CUT:
     // Already Pack label and rw value into packedKeys for sorting!!
     packedKeys[i] = packKey(data.label, nodeVal);
+
+//    packedKeys[i] = ((uint64_t) data.label << 32) | (uint64_t)floatToOrderedInt(nodeVal);
 }
 
 class RandomWalkManager {
@@ -124,49 +136,49 @@ public:
         );
     }
 
-    void stepSlow(DevGraph gr, cudaStream_t stream = nullptr) {
-        old_dist.swap(dist);
-
-        const frac_t stay_weight = rw_stay;
-        const frac_t move_weight = 1.0f - rw_stay;
-
-        // node_val = (old_dist / degree) * move_weight
-        thrust::transform(thrust::cuda::par.on(stream),
-                          old_dist.begin(), old_dist.end(),
-                          gr.active_degrees,
-                          node_val.begin(),
-            [move_weight] __device__ (frac_t d, EdgeIx deg) {
-                return (deg > 0) ? (d / static_cast<frac_t>(deg)) * move_weight : 0.0f;
-            }
-        );
-
-        frac_t* raw_node_vals = thrust::raw_pointer_cast(node_val.data());
-        frac_t* raw_dist_out = thrust::raw_pointer_cast(dist.data());
-
-        auto v_mapped_iter = thrust::make_permutation_iterator(raw_node_vals, gr.neighbors);
-
-        // dist = sum_neighbors node_val
-        cub::DeviceSegmentedReduce::Sum(
-                d_temp_storage,
-                temp_storage_bytes,
-                v_mapped_iter,
-                raw_dist_out,
-                static_cast<int>(numNodes),
-                gr.ranges,
-                gr.ranges + 1,
-                stream
-        );
-
-        // dist += (1 - rw_stay) * old_dist
-        thrust::transform(thrust::cuda::par.on(stream),
-                          dist.begin(), dist.end(),
-                          old_dist.begin(),
-                          dist.begin(),
-            [stay_weight] __device__ (frac_t summed_neighbors, frac_t self_old) {
-                return summed_neighbors + (self_old * stay_weight);
-            }
-        );
-    }
+//    void stepSlow(DevGraph gr, cudaStream_t stream = nullptr) {
+//        old_dist.swap(dist);
+//
+//        const frac_t stay_weight = rw_stay;
+//        const frac_t move_weight = 1.0f - rw_stay;
+//
+//        // node_val = (old_dist / degree) * move_weight
+//        thrust::transform(thrust::cuda::par.on(stream),
+//                          old_dist.begin(), old_dist.end(),
+//                          gr.active_degrees,
+//                          node_val.begin(),
+//            [move_weight] __device__ (frac_t d, EdgeIx deg) {
+//                return (deg > 0) ? (d / static_cast<frac_t>(deg)) * move_weight : 0.0f;
+//            }
+//        );
+//
+//        frac_t* raw_node_vals = thrust::raw_pointer_cast(node_val.data());
+//        frac_t* raw_dist_out = thrust::raw_pointer_cast(dist.data());
+//
+//        auto v_mapped_iter = thrust::make_permutation_iterator(raw_node_vals, gr.neighbors);
+//
+//        // dist = sum_neighbors node_val
+//        cub::DeviceSegmentedReduce::Sum(
+//                d_temp_storage,
+//                temp_storage_bytes,
+//                v_mapped_iter,
+//                raw_dist_out,
+//                static_cast<int>(numNodes),
+//                gr.ranges,
+//                gr.ranges + 1,
+//                stream
+//        );
+//
+//        // dist += (1 - rw_stay) * old_dist
+//        thrust::transform(thrust::cuda::par.on(stream),
+//                          dist.begin(), dist.end(),
+//                          old_dist.begin(),
+//                          dist.begin(),
+//            [stay_weight] __device__ (frac_t summed_neighbors, frac_t self_old) {
+//                return summed_neighbors + (self_old * stay_weight);
+//            }
+//        );
+//    }
 
     [[nodiscard]] const thrust::device_vector<frac_t>& randomWalkValues() const {
         return dist;
@@ -179,30 +191,30 @@ public:
     }
 
 private:
-    void prepare_cub(DevGraph gr, int n) {
-        frac_t* raw_node_vals = thrust::raw_pointer_cast(node_val.data());
-        frac_t* raw_dist_out = thrust::raw_pointer_cast(dist.data());
-
-        thrust::permutation_iterator<frac_t*, const NodeIx*> v_mapped_iter = thrust::make_permutation_iterator(raw_node_vals, gr.neighbors);
-
-        cudaError_t err = cub::DeviceSegmentedReduce::Sum(
-                nullptr,
-                temp_storage_bytes,
-                v_mapped_iter,
-                raw_dist_out,
-                n,
-                gr.ranges,
-                gr.ranges + 1
-        );
-
-        if (err != cudaSuccess) {
-            printf("CUB Error: %s\n", cudaGetErrorString(err));
-        }
-
-        std::cout << "allocating " << temp_storage_bytes << "B for storage" << std::endl;
-
-        cudaMalloc(&d_temp_storage, temp_storage_bytes);
-    }
+//    void prepare_cub(DevGraph gr, int n) {
+//        frac_t* raw_node_vals = thrust::raw_pointer_cast(node_val.data());
+//        frac_t* raw_dist_out = thrust::raw_pointer_cast(dist.data());
+//
+//        thrust::permutation_iterator<frac_t*, const NodeIx*> v_mapped_iter = thrust::make_permutation_iterator(raw_node_vals, gr.neighbors);
+//
+//        cudaError_t err = cub::DeviceSegmentedReduce::Sum(
+//                nullptr,
+//                temp_storage_bytes,
+//                v_mapped_iter,
+//                raw_dist_out,
+//                n,
+//                gr.ranges,
+//                gr.ranges + 1
+//        );
+//
+//        if (err != cudaSuccess) {
+//            printf("CUB Error: %s\n", cudaGetErrorString(err));
+//        }
+//
+//        std::cout << "allocating " << temp_storage_bytes << "B for storage" << std::endl;
+//
+//        cudaMalloc(&d_temp_storage, temp_storage_bytes);
+//    }
 
     void initRandomWalk(unsigned int s) {
         thrust::transform(thrust::make_counting_iterator<NodeIx>(0),

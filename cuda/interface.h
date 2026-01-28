@@ -23,6 +23,7 @@ public:
     void initialize(const Graph& graph);
     Graph downloadGraph();
     std::vector<EdgeIx> downloadDegrees();
+    std::vector<NodeData> downloadPartition();
 
     void iterateRandomWalk();
     std::vector<frac_t> readRandomWalkValues();

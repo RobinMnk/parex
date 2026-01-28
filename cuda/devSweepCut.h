@@ -14,6 +14,8 @@
 #include <thrust/reduce.h>
 #include <thrust/iterator/zip_iterator.h>
 
+#include <cassert>
+
 __global__
 void nodeDiffKernel(
         NodeIx numNodes,
@@ -59,9 +61,8 @@ __global__
 void nodeDiffKernel_Sparse(
         NodeIx numNodes,
         const NodeIx* __restrict__ neighbors,
-        const NodeData* __restrict__ nodeData,
-        const frac_t* __restrict__ values,
-        frac_t* __restrict__ contributions
+        NodeData* __restrict__ nodeData,
+        const frac_t* __restrict__ values
 ) {
     NodeIx i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= numNodes) return;
@@ -70,54 +71,42 @@ void nodeDiffKernel_Sparse(
     const NodeData data = nodeData[i];
     if(data.activeDegree == 0) return;
 
+    assert(data.nix == i && "nix mismatch!");
+
     const frac_t myVal = __ldg(&values[i]);
 
-    frac_t nodeContribution = 0.0f;
-    const EdgeIx rangeEnd = data.rangeStart + data.activeDegree;
+    int nodeContribution = 0;
+    const EdgeIx rangeEnd = data.rangeStart + data.degree;
 
     for (NodeIx j = data.rangeStart; j < rangeEnd; ++j) {
         const NodeIx neighbor = __ldg(&neighbors[j]);
         const NodeData nbData = nodeData[neighbor];         // this has to fetch 32 Bytes, even though we only need 4
 
+        assert(nbData.nix == neighbor && "neighbor nix mismatch!");
+
         if (nbData.label == data.label) {
             // only consider edges that stay within the same cluster
             const frac_t otherVal = __ldg(&values[neighbor]);
             // if otherVal < myVal -> then the edge goes "left" in the sweep cut
-            nodeContribution += (otherVal < myVal) ? -1.0f : 1.0f; // or the edge weight if weighted
+            nodeContribution += (otherVal < myVal) ? -1 : 1; // or the edge weight if weighted
         }
     }
 
-    contributions[i] = nodeContribution;
+    nodeData[i].edgeDiff = nodeContribution;
 }
-// This need all random walk values done -> has to be computed after!
-
-
-struct PrefixValues {
-    EdgeIx edgeDiff;
-    EdgeIx volume;
-
-    __device__ PrefixValues operator+(const PrefixValues& other) const {
-        return {edgeDiff + other.edgeDiff, volume + other.volume};
-    }
-};
-
-struct SweepCutData {
-    float sparsity;
-    int offset;
-};
+// This needs all random walk values done -> has to be computed after!
 
 
 class SweepCutManager {
-    thrust::device_vector<frac_t> nodeContributions;
+public:
+    NodeIx numNodes;
 
     // Buffers
     thrust::device_vector<uint64_t> packedKeysIn;
     thrust::device_vector<uint64_t> packedKeysOut;
     cub::DoubleBuffer<uint64_t> packedKeys;
 
-
     thrust::device_vector<PrefixValues> prefixSums;
-
 
     // CUB Buffers
     size_t temp_storage_bytes = 0;
@@ -128,29 +117,13 @@ class SweepCutManager {
     thrust::device_vector<NodeIx> d_unique_labels;
     thrust::device_vector<SweepCutData> sweepCuts;
 
-
-    void prepareNodeContributions(
-            GraphManager &gm,
-            const thrust::device_vector<frac_t> &values,
-            PartitionManager& pm,
-            cudaStream_t stream = nullptr
-    ) {
-        unsigned int blocksPerGrid = (gm.n + threads - 1) / threads;
-
-        nodeDiffKernel_Sparse<<<blocksPerGrid, threads, 0, stream>>>(
-                gm.n,
-                thrust::raw_pointer_cast(gm.getNeighbors().data()),
-                pm.getPartition(),
-                thrust::raw_pointer_cast(values.data()),
-                thrust::raw_pointer_cast(nodeContributions.data())
-        );
-    }
-
-    void initializeCUB(NodeIx numNodes, cub::DoubleBuffer<NodeData> partitionView) {
+    void initializeCUB(NodeIx numNodes, PartitionManager& pm) {
         cub::DeviceRadixSort::SortPairs(
             nullptr, temp_storage_bytes,
-            packedKeys,
-            partitionView,
+            thrust::raw_pointer_cast(packedKeysIn.data()),
+            thrust::raw_pointer_cast(packedKeysOut.data()),
+            thrust::raw_pointer_cast(pm.partition1.data()),
+            thrust::raw_pointer_cast(pm.partition2.data()),
             static_cast<int>(numNodes)
         );
 
@@ -158,8 +131,8 @@ class SweepCutManager {
     }
 
 public:
-    explicit SweepCutManager(NodeIx n, cub::DoubleBuffer<NodeData> partitionView) :
-        nodeContributions(n),
+    explicit SweepCutManager(NodeIx n, PartitionManager& pm) :
+        numNodes(n),
         packedKeysIn(n),
         packedKeysOut(n),
         packedKeys(thrust::raw_pointer_cast(packedKeysIn.data()),
@@ -168,42 +141,35 @@ public:
         d_unique_labels(n),
         sweepCuts(n)
     {
-        initializeCUB(n, partitionView);
+        initializeCUB(n, pm);
     }
 
-
-    void solve(GraphManager& gm, PartitionManager& pm);
 
     void compute(
         GraphManager& gm,
-        const thrust::device_vector<frac_t> &values,
         PartitionManager& pm,
-        cudaStream_t stream = nullptr
-     ) {
-        prepareNodeContributions(gm, values, pm, stream);
-        cudaStreamSynchronize(stream);
-        solve(gm, pm);
-    }
+        const thrust::device_vector<frac_t> &values
+    );
 
     AllSweepCuts resultToCPU(NodeIx numClusters) {
         std::vector<NodeIx> clusterIds(numClusters);
-        std::vector<NodeIx> offsets(numClusters);
-        std::vector<float> sparsities(numClusters);
+        std::vector<SweepCutData> cuts(numClusters);
+        std::vector<PrefixValues> pS(prefixSums.size());
         thrust::copy(d_unique_labels.begin(), d_unique_labels.begin() + numClusters, clusterIds.begin());
-//        thrust::copy(d_min_indices.begin(), d_min_indices.begin() + numClusters, offsets.begin());
-//        thrust::copy(d_min_ratios.begin(), d_min_ratios.begin() + numClusters, sparsities.begin());
-        return {clusterIds, offsets, sparsities};
+        thrust::copy(sweepCuts.begin(), sweepCuts.begin() + numClusters, cuts.begin());
+        thrust::copy(prefixSums.begin(), prefixSums.begin() + prefixSums.size(), pS.begin());
+        return {clusterIds, cuts, pS};
     }
 
-    uint64_t* getKeyBuffer() {
-        return packedKeys.Current();
+    cub::DoubleBuffer<uint64_t>& getKeyBuffer() {
+        return packedKeys;
     }
 
 };
 
 
 struct LabelExtractor {
-    __device__
+    __host__ __device__
     inline NodeIx operator()(uint64_t k) const {
         return static_cast<NodeIx>(k >> 32);
     }
@@ -216,19 +182,86 @@ struct ArgMinOp {
     }
 };
 
-void SweepCutManager::solve(GraphManager& gm, PartitionManager& pm) {
+struct PrefixSumOp {
+    __host__ __device__
+    PrefixValues operator()(const PrefixValues& a, const PrefixValues& b) const {
+        return { a.edgeDiff + b.edgeDiff, a.volume + b.volume, b.nix };
+    }
+};
+
+struct PrefixExtractor {
+    __host__ __device__
+    PrefixValues operator()(const NodeData& n) const {
+        return { n.edgeDiff, n.degree, n.nix };
+    }
+};
+
+void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thrust::device_vector<frac_t> &values) {
+
+    /**
+     *  STEP 0: Prepare Data
+     */
+
+    auto& partition = pm.getPartitionView();
+
+    unsigned int blocksPerGrid = (gm.n + threads - 1) / threads;
+
+    nodeDiffKernel_Sparse<<<blocksPerGrid, threads, 0, nullptr>>>(
+            gm.n,
+            thrust::raw_pointer_cast(gm.getNeighbors().data()),
+            partition.Current(),
+            thrust::raw_pointer_cast(values.data())
+    );
+
+    cudaStreamSynchronize(nullptr);
+
+    /**
+     *  STEP 1: SORT
+     */
+
+//    std::vector<uint64_t> keys(20);
+//    thrust::copy(
+//            thrust::device_pointer_cast(packedKeysIn.data()),
+//            thrust::device_pointer_cast(packedKeysIn.data()) + 20,
+//            keys.begin()
+//    );
+//    std::cout << "KEYS BEFORE: \t";
+//    for(int i = 0; i < 20; i++) std::cout << keys[i] << ", ";
+//    std::cout << std::endl;
 
     cub::DeviceRadixSort::SortPairs(
         d_temp_storage, temp_storage_bytes,
-        packedKeys,
-        pm.getPartitionView(),
+        thrust::raw_pointer_cast(packedKeysIn.data()),
+        thrust::raw_pointer_cast(packedKeysOut.data()),
+        thrust::raw_pointer_cast(pm.partition1.data()),
+        thrust::raw_pointer_cast(pm.partition2.data()),
         static_cast<int>(gm.n)
     );
 
-    NodeData* sortedData = pm.getPartition();
-    uint64_t* sortedKeys = packedKeys.Current();
+
+//    thrust::copy(
+//            thrust::device_pointer_cast(packedKeysOut.data()),
+//            thrust::device_pointer_cast(packedKeysOut.data()) + 20,
+//            keys.begin()
+//    );
+//    std::cout << "KEYS AFTER: \t";
+//    for(int i = 0; i < 20; i++) std::cout << keys[i] << ", ";
+//    std::cout << std::endl;
+
+    NodeData* sortedData = thrust::raw_pointer_cast(pm.partition2.data());
+    uint64_t* sortedKeys = thrust::raw_pointer_cast(packedKeysOut.data());
+
+//    thrust::copy(
+//            thrust::device_pointer_cast(packedKeys.Current()),
+//            thrust::device_pointer_cast(packedKeys.Current()) + 10,
+//            keys.begin()
+//    );
+//    std::cout << "KEYS AFTER: \t";
+//    for(int i = 0; i < 10; i++) std::cout << keys[i] << ", ";
+//    std::cout << std::endl;
 
     /**
+     *  STEP 2: SCAN
      * - Extract edgeDiff and activeDegree from every node
      * - Perform separate prefix sum on both
      * - save outcome to prefixSums
@@ -239,19 +272,21 @@ void SweepCutManager::solve(GraphManager& gm, PartitionManager& pm) {
         thrust::make_transform_iterator(sortedKeys, LabelExtractor()),
         thrust::make_transform_iterator(sortedKeys + gm.n, LabelExtractor()),
         // Values (Input)
-        thrust::make_transform_iterator(sortedData, [] __device__(const NodeData& n) -> PrefixValues {
-            return {n.edgeDiff, n.activeDegree};
-        }),
+        thrust::make_transform_iterator(sortedData, PrefixExtractor()),
         // Output
         prefixSums.begin(),
         thrust::equal_to<NodeIx>(),
-        thrust::plus<PrefixValues>()
+        PrefixSumOp()
     );
-
 
     // 1. Get raw pointers for the lambda capture
     EdgeIx* clusterVolumesPtr       = thrust::raw_pointer_cast(pm.getVolumes().data());
     PrefixValues* prefixSumsPtr     = thrust::raw_pointer_cast(prefixSums.data());
+
+    thrust::device_ptr<EdgeIx> dev_ptr(clusterVolumesPtr);
+    EdgeIx firstVol = dev_ptr[0]; // This triggers an implicit cudaMemcpy
+
+    std::cout << "Cluster 0 Volume: " << firstVol << std::endl;
 
     // 2. Define the Conductance + Indexing logic in a single iterator
     auto conductance_index_iter = thrust::make_transform_iterator(
@@ -265,13 +300,17 @@ void SweepCutManager::solve(GraphManager& gm, PartitionManager& pm) {
                 const EdgeIx edgeDiff = pv.edgeDiff;
                 const EdgeIx prefixVol = pv.volume;
 
+                // TODO: Check if label == pv.label!!
+
                 // min(vol, totalVol - vol)
                 const EdgeIx denom = (prefixVol < totalVol - prefixVol) ? prefixVol : (totalVol - prefixVol);
-                const float sparsity  = (denom > 0) ? (static_cast<float>(edgeDiff) / static_cast<float>(denom)) : 1e30f;
+                bool pred = denom > 0;
+                const float sparsity  = pred ? (static_cast<float>(edgeDiff) / static_cast<float>(denom)) : 1e30f;
 
                 return { sparsity , i };
             }
     );
+
 
 // 3. One-pass Reduction to find the best cut per label
     thrust::reduce_by_key(
@@ -288,6 +327,23 @@ void SweepCutManager::solve(GraphManager& gm, PartitionManager& pm) {
             thrust::equal_to<NodeIx>(),
             ArgMinOp()
     );
+
+
+
+    NodeData* in  = partition.Current();
+    NodeData* out = partition.Alternate();
+
+    thrust::for_each_n(
+        thrust::device,
+        thrust::make_counting_iterator<NodeIx>(0),
+        numNodes,
+        [in, out] __device__ (NodeIx k) {
+            const NodeData nd = in[k];
+            out[nd.nix] = nd;
+        }
+    );
+
+    partition.selector ^= 1;
 }
 
 

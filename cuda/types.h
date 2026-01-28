@@ -6,18 +6,18 @@
 #define PAREX_TYPES_H
 
 #include "core/definitions.h"
-
-struct NodeData {
-    NodeIx nix;
-    NodeIx label;
-    EdgeIx activeDegree;
-    NodeIx rangeStart;
-
-    EdgeIx degree;
-    EdgeIx edgeDiff;
-    uint32_t padding[2]; // Padding
-    // Potentially: volume of cluster (probably needs remaining uint32_t)
-};
+//
+//struct NodeData {
+//    NodeIx nix;
+//    NodeIx label;
+//    EdgeIx activeDegree;
+//    NodeIx rangeStart;
+//
+//    EdgeIx degree;
+//    int edgeDiff;
+//    uint32_t padding[2]; // Padding
+//    // Potentially: volume of cluster (probably needs remaining uint32_t)
+//};
 
 
 #endif //PAREX_TYPES_H

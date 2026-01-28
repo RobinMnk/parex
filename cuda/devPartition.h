@@ -22,13 +22,15 @@ struct InitFunctor {
             static_cast<NodeIx>(i),
             static_cast<NodeIx>(0),
             end - start,
-            start
+            start,
+            end - start
         };
     }
 };
 
 
 class PartitionManager {
+public:
     thrust::device_vector<NodeData> partition1;
     thrust::device_vector<NodeData> partition2;
     cub::DoubleBuffer<NodeData> partition;
@@ -47,7 +49,7 @@ public:
             thrust::raw_pointer_cast(partition2.data())),
         numActiveClusters{1},
         activeLabels(gm.n, 0),
-        volumes(gm.n, 1)
+        volumes(gm.n, 2 * gm.m)
     {
         thrust::transform(
             thrust::make_counting_iterator<NodeIx>(0),
@@ -57,17 +59,56 @@ public:
         );
     }
 
-    NodeData* getPartition() {
-        return partition.Current();
-    }
-
     cub::DoubleBuffer<NodeData>& getPartitionView() {
         return partition;
     }
 
-
     thrust::device_vector<EdgeIx>& getVolumes() {
         return volumes;
+    }
+
+    struct Temp {
+        NodeIx ix;
+        EdgeIx deg;
+    };
+
+
+    struct DegreeExtractor {
+        __host__ __device__
+        Temp operator()(const NodeData& n) const {
+            return {n.nix, n.degree };
+        }
+    };
+
+    std::vector<EdgeIx> downloadActiveDegrees() {
+        size_t n = partition1.size();
+        std::vector<Temp> degrees(n);
+
+        auto d_ptr = thrust::device_pointer_cast(getPartitionView().Current());
+
+        auto first = thrust::make_transform_iterator(
+                d_ptr, DegreeExtractor{}
+        );
+        auto last = first + n;
+
+        thrust::copy(first, last, degrees.begin());
+
+        std::vector<EdgeIx> result(n);
+        for(int i = 0; i < n; i++) {
+            result[degrees[i].ix] = degrees[i].deg;
+        }
+        return result;
+    }
+
+    std::vector<NodeData> downloadPartition() {
+        size_t n = partition1.size();
+        std::vector<NodeData> pt(n);
+
+        auto d_ptr = thrust::device_pointer_cast(partition2.data());
+
+        thrust::copy(d_ptr, d_ptr + n, pt.begin());
+
+        return pt;
     }
 
 };

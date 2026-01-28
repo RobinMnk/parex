@@ -34,11 +34,11 @@ public:
         gm = std::make_unique<GraphManager>(graph);
         pt = std::make_unique<PartitionManager>(*gm);
         rw = std::make_unique<RandomWalkManager>(graph.numNodes);
-        sc = std::make_unique<SweepCutManager>(graph.numNodes, pt->getPartitionView());
+        sc = std::make_unique<SweepCutManager>(graph.numNodes, *pt);
     }
 
     void iterateRandomWalk() {
-        rw->step(*gm, pt->getPartition(), sc->getKeyBuffer());
+        rw->step(*gm, thrust::raw_pointer_cast(pt->partition1.data()), thrust::raw_pointer_cast(sc->packedKeysIn.data()));
     }
 
     std::vector<frac_t> readRandomWalkValues() {
@@ -46,15 +46,19 @@ public:
     }
 
     std::vector<EdgeIx> downloadDegrees() {
-        return {};
+        return pt->downloadActiveDegrees();
     }
 
     void computeSweepCuts() {
-        sc->compute(*gm, rw->randomWalkValues(), *pt);
+        sc->compute(*gm, *pt, rw->randomWalkValues());
     }
 
     AllSweepCuts getSweepCuts() {
         return sc->resultToCPU(gm->numClusters);
+    }
+
+    std::vector<NodeData> downloadPartition() {
+        return pt->downloadPartition();
     }
 
     void updateLabels(std::vector<NodeIx>& nodeLabels, NodeIx activeClusters) {
@@ -116,6 +120,8 @@ void CudaDeviceManager::iterateRandomWalk() { impl->iterateRandomWalk(); }
 void CudaDeviceManager::computeSweepCuts() { impl->computeSweepCuts(); }
 
 AllSweepCuts CudaDeviceManager::readSweepCuts() { return impl->getSweepCuts(); }
+
+std::vector<NodeData> CudaDeviceManager::downloadPartition() { return impl->downloadPartition(); }
 
 void CudaDeviceManager::updateLabels(std::vector<NodeIx>& nodeLabels, NodeIx activeClusters) { impl->updateLabels(nodeLabels, activeClusters); }
 
