@@ -83,11 +83,19 @@ void nodeDiffKernel_Sparse(
 
         assert(nbData.nix == neighbor && "neighbor nix mismatch!");
 
+        // only consider edges that stay within the same cluster
         if (nbData.label == data.label) {
-            // only consider edges that stay within the same cluster
             const frac_t otherVal = __ldg(&values[neighbor]);
-            // if otherVal < myVal -> then the edge goes "left" in the sweep cut
-            nodeContribution += (otherVal < myVal) ? -1 : 1; // or the edge weight if weighted
+
+            bool isBefore;
+            if (otherVal != myVal) {
+                isBefore = (otherVal < myVal);
+            } else {
+                // matching the stable sort
+                isBefore = (neighbor < i);
+            }
+
+            nodeContribution += (isBefore) ? -1 : 1;
         }
     }
 
