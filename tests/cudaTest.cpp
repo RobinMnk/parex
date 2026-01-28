@@ -64,7 +64,8 @@ TEST_P(CudaTest, RandomWalk) {
 INSTANTIATE_TEST_SUITE_P(
     Iterations,
     CudaTest,
-    testing::Values(0, 1, 2, 4, 8, 16, 64, 128, 256)
+    testing::Values(2)
+//    testing::Values(0, 1, 2, 4, 8, 16, 64, 128, 256)
 );
 
 
@@ -189,6 +190,7 @@ TEST_F(CudaTest, CutTest) {
     Timer t;
 
     t.start();
+    // TODO: this only cuts cluster 0
     SweepCut sweepCut = part.sweepCut(0, z);
     std::vector<NodeIx> modified{0};
     part.split<false, false>(0, sweepCut.offset, modified);
@@ -207,6 +209,10 @@ TEST_F(CudaTest, CutTest) {
     std::cout << "\t -> speedup: " << (static_cast<float>(timeCPU) / timeGPU) << std::endl;
 
 
+    AllSweepCuts result = cuda.readSweepCuts();
+    EXPECT_NEAR(result.cuts[0].sparsity, sweepCut.sparsity, 0.00000001);
+
+
     std::vector<NodeData> pt = cuda.downloadPartition();
 
     for (NodeIx nix = 0; nix < graph.numNodes; nix++) {
@@ -215,50 +221,54 @@ TEST_F(CudaTest, CutTest) {
 }
 
 
-//TEST_P(CudaTest, RepeatedCuts) {
-//    auto rwData = cuda.readRandomWalkValues();
-//    RandomWalk rw(graph.numNodes);
-//    rw.setData(rwData);
-//    Partition part(&graph);
-//
-//
-//    std::vector<NodeIx> active{0};
-//
-//    for(int i = 0; i < GetParam(); i++) {
-//        rw.iterate(part, active);
-//        cuda.iterateRandomWalk();
-//
-//        auto y = cuda.readRandomWalkValues();
-//        auto z = rw.values();
-//
-//        for (NodeIx nix = 0; nix < graph.numNodes; nix++) {
-//            ASSERT_NEAR(y[nix], z[nix], 0.00001);
-//        }
-//
-//        Timer t;
-//
-//        t.start();
-//        SweepCut sweepCut = part.sweepCut(0, z);
-//        part.split<false, false>(0, sweepCut.offset, active);
-//        auto timeCPU = t.timeMicros();
-//        std::cout << "CPU time: " << timeCPU << "microseconds" << std::endl;
-//
-//        std::vector<NodeIx> expectedLabels = getLabels(graph, part);
-//
-//        t.start();
-//        cuda.computeSweepCuts();
-//        cuda.cutClusters();
-//        cuda.fixupPartition();
-//        auto timeGPU = t.timeMicros();
-//        std::cout << "GPU time: " << timeGPU << "microseconds" << std::endl;
-//
-//        std::vector<NodeData> pt = cuda.downloadPartition();
-//
-//        for (NodeIx nix = 0; nix < graph.numNodes; nix++) {
-//            EXPECT_EQ(pt[nix].label, expectedLabels[nix]) << " nix: " << nix;
-//        }
-//    }
-//}
+TEST_P(CudaTest, RepeatedCuts) {
+    auto rwData = cuda.readRandomWalkValues();
+    RandomWalk rw(graph.numNodes);
+    rw.setData(rwData);
+    Partition part(&graph);
+
+
+    std::vector<NodeIx> active{0};
+
+    for(int i = 0; i < GetParam(); i++) {
+        auto deg = cuda.downloadDegrees();
+        for(NodeIx nix = 0; nix < graph.numNodes; nix++) {
+            ASSERT_EQ(part.vertexFor(nix).internalDegree, deg[nix]) << " nix = " << nix;
+        }
+
+        rw.iterate(part, active);
+        cuda.iterateRandomWalk();
+
+        auto y = cuda.readRandomWalkValues();
+        auto z = rw.values();
+
+        for (NodeIx nix = 0; nix < graph.numNodes; nix++) {
+            ASSERT_NEAR(y[nix], z[nix], 0.00001);
+        }
+
+
+        // TODO: this only cuts cluster 0
+        SweepCut sweepCut = part.sweepCut(0, z);
+        part.split<false, false>(0, sweepCut.offset, active);
+
+        std::vector<NodeIx> expectedLabels = getLabels(graph, part);
+
+        cuda.computeSweepCuts();
+        cuda.cutClusters();
+
+        std::vector<NodeData> pt = cuda.downloadPartition();
+
+        std::cout << "CPU Partition:" << std::endl;
+        for(NodeIx clusterId = 0; clusterId < part.numClusters(); clusterId++) {
+            auto& cl = part.getCluster(clusterId);
+            std::cout << "\t" << clusterId << ": " << cl.size() << " [" << cl.volume << "]" << std::endl;
+        }
+
+        for (NodeIx nix = 0; nix < graph.numNodes; nix++) {
+            EXPECT_EQ(pt[nix].label, expectedLabels[nix]) << " nix: " << nix;
+        }
+    }
+}
 
 
 

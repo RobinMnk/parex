@@ -55,6 +55,11 @@ public:
 
     void cutClusters() {
         pt->cutClusters(sc->getSweepCuts(), sc->getNumActiveClusters());
+
+        // absolutely crucial!!
+        fixupPartition();
+
+        pt->computeActiveDegrees(*gm);
     }
 
     void fixupPartition() {

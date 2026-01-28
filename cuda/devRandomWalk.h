@@ -53,7 +53,7 @@ __global__
 void lazyRandomWalkKernel(
         NodeIx numNodes,
         const NodeIx* __restrict__ neighbors,
-        const NodeData* __restrict__ nodeData,
+        NodeData* __restrict__ nodeData,
         const EdgeIx* __restrict__ activeDegrees,
         const frac_t* __restrict__ old_dist,
         frac_t* __restrict__ dist,
@@ -86,6 +86,7 @@ void lazyRandomWalkKernel(
     const frac_t nodeVal = (incoming_sum * (1.0f - stay_weight)) + (old_dist[i] * stay_weight);
 
     dist[i] = nodeVal;
+    nodeData[i].activeDegree = activeDegrees[i];
 
     // FOR SWEEP CUT:
     // Already Pack label and rw value into packedKeys for sorting!!

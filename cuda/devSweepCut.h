@@ -93,7 +93,7 @@ void nodeDiffKernel_Sparse(
 
     // Initialize data fields for the sweep cut
     nodeData[i].prefixEdgeDiff = nodeContribution;
-    nodeData[i].prefixVolume = data.degree;
+    nodeData[i].prefixVolume = data.activeDegree;
     nodeData[i].offsetInCluster = 1;
 }
 // This needs all random walk values done -> has to be computed after!
@@ -144,7 +144,8 @@ public:
     thrust::device_vector<SweepCutData>& getSweepCuts() {
         return sweepCuts;
     }
-    NodeIx getNumActiveClusters() {
+
+    NodeIx getNumActiveClusters() const {
         return numActiveClusters;
     }
 
@@ -178,7 +179,7 @@ struct LabelExtractor {
 struct DegreeExtractor {
     __device__ __forceinline__
     EdgeIx operator()(const NodeData& nd) const {
-        return nd.degree;
+        return nd.activeDegree;
     }
 };
 
@@ -253,6 +254,8 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
     NodeData* sortedData = partition.Current();
     uint64_t* sortedKeys = packedKeys.Current();
 
+    auto label_iter = thrust::make_transform_iterator(sortedKeys, LabelExtractor());
+
     /**
      *  STEP 2: SCAN
      * - Perform separate prefix sum on edgeDiff and volume
@@ -261,8 +264,8 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
     thrust::inclusive_scan_by_key(
         thrust::device,
         // Keys
-        thrust::make_transform_iterator(sortedKeys, LabelExtractor()),
-        thrust::make_transform_iterator(sortedKeys + gm.n, LabelExtractor()),
+        label_iter,
+        label_iter + gm.n,
         // Values
         sortedData,      // Input Begin
         sortedData,      // Output Begin (In-place!)
@@ -274,9 +277,25 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
      * STEP 3: REDUCE
      */
 
-    const EdgeIx* clusterVolumesPtr = thrust::raw_pointer_cast(pm.getVolumes().data());
-    auto label_iter = thrust::make_transform_iterator(sortedKeys, LabelExtractor());
+    // find internal volume of each cluster
+    thrust::reduce_by_key(
+            thrust::device,
+            // Keys
+            label_iter,
+            label_iter + gm.n,
+            // Values
+            thrust::make_transform_iterator(sortedData, DegreeExtractor()),
+            // Output Label
+            thrust::make_discard_iterator(),
+            // Output Values
+            pm.getVolumes().begin(),
+            thrust::equal_to<NodeIx>(),
+            thrust::plus<>()
+    );
 
+    EdgeIx* clusterVolumesPtr = thrust::raw_pointer_cast(pm.getVolumes().data());
+
+    // find best sweep cut for each cluster
     auto end_pair = thrust::reduce_by_key(
         thrust::device,
         // Keys
@@ -293,24 +312,6 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
     );
 
     numActiveClusters = static_cast<NodeIx>(thrust::distance(sweepCuts.begin(), end_pair.second));
-
-    // Update volumes
-    auto degree_iter = thrust::make_transform_iterator(partition.Current(), DegreeExtractor());
-
-    thrust::reduce_by_key(
-        thrust::device,
-        // Keys
-        label_iter,
-        label_iter + gm.n,
-        // Values
-        degree_iter,
-        // Key Output (not needed)
-        thrust::make_discard_iterator(),
-        // Value Output
-        pm.getVolumes().begin(),
-        thrust::equal_to<NodeIx>(),
-        thrust::plus<EdgeIx>()
-    );
 }
 
 

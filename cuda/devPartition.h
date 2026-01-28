@@ -23,7 +23,8 @@ struct InitFunctor {
             static_cast<NodeIx>(i),
             static_cast<NodeIx>(0),
             end - start,
-            start
+            start,
+            end - start,
         };
     }
 };
@@ -36,13 +37,14 @@ struct ActiveEdgeLogic {
 
     __device__
     int operator()(EdgeIx edgeIdx) const {
-        // 1. Perfectly balanced binary search
         NodeIx srcIdx = thrust::upper_bound(thrust::seq, rowOffsets, rowOffsets + numNodes, edgeIdx) - rowOffsets - 1;
 
-        // 2. Load labels
         NodeIx srcLabel = nodes[srcIdx].label;
         NodeIx tgtNode = neighbors[edgeIdx];
         NodeIx tgtLabel = __ldg(&nodes[tgtNode].label);
+
+        // TODO: the map in the graph gives the edge in the other direction -> this can remove the binary search!
+        // srcLabel = neighbors[map[edgeIdx]];
 
         return (srcLabel == tgtLabel) ? 1 : 0;
     }
@@ -57,7 +59,6 @@ class PartitionManager {
 
     NodeIx numActiveClusters;
     thrust::device_vector<EdgeIx> volumes;
-
     thrust::device_vector<EdgeIx> activeDegrees;
 
 
@@ -129,6 +130,9 @@ public:
         numActiveClusters += numNewClusters;
     }
 
+    /**
+     * requires invariant partition[i].nix == i
+     */
     void computeActiveDegrees(GraphManager& gm) {
         NodeIx* ranges = thrust::raw_pointer_cast(gm.getRanges().data());
         NodeIx* neighbors = thrust::raw_pointer_cast(gm.getNeighbors().data());

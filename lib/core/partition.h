@@ -315,8 +315,8 @@ SweepCut Partition::sweepCut(NodeIx clusterId, const T& values) {
 
 //    std::vector<PrefixValues> prefixes(current.size());
 
-    for(const ClusterVertex& cv: clusters[clusterId]) {
-        cutVolume += graph->degree(cv.nix);
+    for(const ClusterVertex& cv: current) {
+        cutVolume += cv.internalDegree; // graph->degree(cv.nix);
 
 //        prefixes[offset].volume = cutVolume;
 
@@ -338,9 +338,9 @@ SweepCut Partition::sweepCut(NodeIx clusterId, const T& values) {
 //        prefixes[offset].edgeDiff = cutEdges;
 //        prefixes[offset].nix = cv.nix;
 
-        if(cutVolume == clusters[clusterId].volume) break;
+        if(cutVolume == current.internalVolume) break;
 
-        frac_t denom = static_cast<frac_t>(std::min(cutVolume, clusters[clusterId].volume - cutVolume));
+        frac_t denom = static_cast<frac_t>(std::min(cutVolume, current.internalVolume - cutVolume));
 
         frac_t sparsity = static_cast<frac_t>(cutEdges) / denom;
 

@@ -39,6 +39,7 @@ struct NodeData {
     EdgeIx degree;
     NodeIx rangeStart;
 
+    EdgeIx activeDegree;
     EdgeIx prefixVolume;
     int prefixEdgeDiff;
     NodeIx offsetInCluster;
