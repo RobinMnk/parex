@@ -7,6 +7,7 @@
 
 #include "types.h"
 #include <thrust/device_vector.h>
+#include <thrust/binary_search.h>
 
 struct InitFunctor {
     const NodeIx* ranges;
@@ -22,9 +23,28 @@ struct InitFunctor {
             static_cast<NodeIx>(i),
             static_cast<NodeIx>(0),
             end - start,
-            end - start,
             start
         };
+    }
+};
+
+struct ActiveEdgeLogic {
+    const NodeData* nodes;
+    const NodeIx* neighbors;
+    const EdgeIx* rowOffsets;
+    NodeIx numNodes;
+
+    __device__
+    int operator()(EdgeIx edgeIdx) const {
+        // 1. Perfectly balanced binary search
+        NodeIx srcIdx = thrust::upper_bound(thrust::seq, rowOffsets, rowOffsets + numNodes, edgeIdx) - rowOffsets - 1;
+
+        // 2. Load labels
+        NodeIx srcLabel = nodes[srcIdx].label;
+        NodeIx tgtNode = neighbors[edgeIdx];
+        NodeIx tgtLabel = __ldg(&nodes[tgtNode].label);
+
+        return (srcLabel == tgtLabel) ? 1 : 0;
     }
 };
 
@@ -36,8 +56,14 @@ class PartitionManager {
     cub::DoubleBuffer<NodeData> partition;
 
     NodeIx numActiveClusters;
-    thrust::device_vector<NodeIx> activeLabels;
     thrust::device_vector<EdgeIx> volumes;
+
+    thrust::device_vector<EdgeIx> activeDegrees;
+
+
+    // CUB Buffers
+    size_t temp_storage_bytes = 0;
+    void *d_temp_storage = nullptr;
 
 
 public:
@@ -49,8 +75,9 @@ public:
         partition(thrust::raw_pointer_cast(partition1.data()),
             thrust::raw_pointer_cast(partition2.data())),
         numActiveClusters{1},
-        activeLabels(gm.n, 0),
-        volumes(gm.n, 2 * gm.m)
+//        activeLabels(gm.n, 0),
+        volumes(gm.n, 2 * gm.m),
+        activeDegrees(gm.n)
     {
         thrust::transform(
             thrust::make_counting_iterator<NodeIx>(0),
@@ -58,38 +85,80 @@ public:
             partition1.begin(),
             InitFunctor(thrust::raw_pointer_cast(gm.getRanges().data()))
         );
+        auto& ranges = gm.getRanges();
+        thrust::transform(ranges.begin() + 1, ranges.end(), ranges.begin(), activeDegrees.begin(), thrust::minus<int>());
+
+
+        NodeIx* rangesPtr = thrust::raw_pointer_cast(gm.getRanges().data());
+        NodeIx* neighbors = thrust::raw_pointer_cast(gm.getNeighbors().data());
+
+        auto input_iter = thrust::make_transform_iterator(
+                thrust::make_counting_iterator(0),
+                ActiveEdgeLogic{partition.Current(), neighbors, rangesPtr, gm.n}
+        );
+
+        cub::DeviceSegmentedReduce::Sum(
+                nullptr, temp_storage_bytes,
+                input_iter,
+                thrust::raw_pointer_cast(activeDegrees.data()),
+                static_cast<int>(numNodes),
+                rangesPtr,
+                rangesPtr + 1,
+                nullptr
+        );
+
+        cudaMalloc(&d_temp_storage, temp_storage_bytes);
     }
 
     void cutClusters(thrust::device_vector<SweepCutData>& sweepCuts, NodeIx numNewClusters) {
-
         SweepCutData* sweepCutPtr = thrust::raw_pointer_cast(sweepCuts.data());
 
         thrust::for_each_n(
-                thrust::device,
-                partition.Current(),
-                numNodes,
-                [sweepCutPtr, numNewClusters] __device__ (NodeData& data) {
-                    const NodeIx clusterId = data.label;
-                    SweepCutData sc = sweepCutPtr[clusterId];
-                    if(data.offsetInCluster > sc.offset) {
-                        data.label += numNewClusters;
-                    }
+            thrust::device,
+            partition.Current(),
+            numNodes,
+            [sweepCutPtr, numNewClusters] __device__ (NodeData& data) {
+                const NodeIx clusterId = data.label;
+                SweepCutData sc = sweepCutPtr[clusterId];
+                if(data.offsetInCluster > sc.offset) {
+                    data.label += numNewClusters;
                 }
+            }
+        );
+
+        numActiveClusters += numNewClusters;
+    }
+
+    void computeActiveDegrees(GraphManager& gm) {
+        NodeIx* ranges = thrust::raw_pointer_cast(gm.getRanges().data());
+        NodeIx* neighbors = thrust::raw_pointer_cast(gm.getNeighbors().data());
+
+        auto input_iter = thrust::make_transform_iterator(
+                thrust::make_counting_iterator(0),
+                ActiveEdgeLogic{partition.Current(), neighbors, ranges, gm.n}
+        );
+
+        cub::DeviceSegmentedReduce::Sum(
+            d_temp_storage,
+            temp_storage_bytes,
+            input_iter,
+            thrust::raw_pointer_cast(activeDegrees.data()),
+            static_cast<int>(numNodes),
+            ranges,
+            ranges + 1,
+            nullptr
         );
     }
 
-
-
     /**
-     * Restore invariant in Partition such that
-     * partition[i].nix == i
+     * Restore invariant that partition[i].nix == i
      */
     void scatter() {
         NodeData* in  = partition.Current();
         NodeData* out = partition.Alternate();
 
         thrust::for_each_n(
-                thrust::device,
+                thrust::cuda::par.on(nullptr),
                 thrust::make_counting_iterator<NodeIx>(0),
                 numNodes,
                 [in, out] __device__ (NodeIx k) {
@@ -101,7 +170,9 @@ public:
         partition.selector ^= 1;
     }
 
-
+    thrust::device_vector<EdgeIx>& getActiveDegrees() {
+        return activeDegrees;
+    }
 
 
     cub::DoubleBuffer<NodeData>& getPartitionView() {
@@ -125,34 +196,37 @@ public:
         }
     };
 
+
     std::vector<EdgeIx> downloadActiveDegrees() {
-        size_t n = partition1.size();
-        std::vector<Temp> degrees(n);
-
-        auto d_ptr = thrust::device_pointer_cast(getPartitionView().Current());
-
-        auto first = thrust::make_transform_iterator(
-                d_ptr, DegreeExtractor{}
-        );
-        auto last = first + n;
-
-        thrust::copy(first, last, degrees.begin());
-
-        std::vector<EdgeIx> result(n);
-        for(int i = 0; i < n; i++) {
-            result[degrees[i].ix] = degrees[i].deg;
-        }
-        return result;
+        std::vector<EdgeIx> degrees(numNodes);
+        thrust::copy(activeDegrees.begin(), activeDegrees.end(), degrees.begin());
+        return degrees;
     }
 
+//    std::vector<EdgeIx> downloadActiveDegrees() {
+//        size_t n = partition1.size();
+//        std::vector<Temp> degrees(n);
+//
+//        auto d_ptr = thrust::device_pointer_cast(getPartitionView().Current());
+//
+//        auto first = thrust::make_transform_iterator(
+//                d_ptr, DegreeExtractor{}
+//        );
+//        auto last = first + n;
+//
+//        thrust::copy(first, last, degrees.begin());
+//
+//        std::vector<EdgeIx> result(n);
+//        for(int i = 0; i < n; i++) {
+//            result[degrees[i].ix] = degrees[i].deg;
+//        }
+//        return result;
+//    }
+
     std::vector<NodeData> downloadPartition() {
-        size_t n = partition1.size();
-        std::vector<NodeData> pt(n);
-
-        auto d_ptr = thrust::device_pointer_cast(partition2.data());
-
-        thrust::copy(d_ptr, d_ptr + n, pt.begin());
-
+        std::vector<NodeData> pt(numNodes);
+        thrust::device_ptr<NodeData> dev_ptr(partition.Current());
+        thrust::copy(dev_ptr, dev_ptr + numNodes, pt.begin());
         return pt;
     }
 

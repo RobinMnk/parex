@@ -38,7 +38,7 @@ public:
     }
 
     void iterateRandomWalk() {
-        rw->step(*gm, pt->getPartitionView(), sc->getKeyBuffer());
+        rw->step(*gm, pt->getPartitionView(), sc->getKeyBuffer(), pt->getActiveDegrees());
     }
 
     std::vector<frac_t> readRandomWalkValues() {

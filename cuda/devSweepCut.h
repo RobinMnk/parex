@@ -69,7 +69,6 @@ void nodeDiffKernel_Sparse(
 
     // early exit for inactive nodes
     const NodeData data = nodeData[i];
-    if(data.activeDegree == 0) return;
 
     assert(data.nix == i && "nix mismatch!");
 
@@ -80,7 +79,7 @@ void nodeDiffKernel_Sparse(
 
     for (NodeIx j = data.rangeStart; j < rangeEnd; ++j) {
         const NodeIx neighbor = __ldg(&neighbors[j]);
-        const NodeData nbData = nodeData[neighbor];         // this has to fetch 32 Bytes, even though we only need 4
+        const NodeData nbData = nodeData[neighbor];
 
         assert(nbData.nix == neighbor && "neighbor nix mismatch!");
 
@@ -173,6 +172,13 @@ struct LabelExtractor {
     __host__ __device__
     inline NodeIx operator()(uint64_t k) const {
         return static_cast<NodeIx>(k >> 32);
+    }
+};
+
+struct DegreeExtractor {
+    __device__ __forceinline__
+    EdgeIx operator()(const NodeData& nd) const {
+        return nd.degree;
     }
 };
 
@@ -269,12 +275,13 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
      */
 
     const EdgeIx* clusterVolumesPtr = thrust::raw_pointer_cast(pm.getVolumes().data());
+    auto label_iter = thrust::make_transform_iterator(sortedKeys, LabelExtractor());
 
     auto end_pair = thrust::reduce_by_key(
         thrust::device,
         // Keys
-        thrust::make_transform_iterator(sortedKeys, LabelExtractor()),
-        thrust::make_transform_iterator(sortedKeys + gm.n, LabelExtractor()),
+        label_iter,
+        label_iter + gm.n,
         // Values
         thrust::make_transform_iterator(sortedData, ReduceOp(clusterVolumesPtr)),
         // Output Label
@@ -286,6 +293,24 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
     );
 
     numActiveClusters = static_cast<NodeIx>(thrust::distance(sweepCuts.begin(), end_pair.second));
+
+    // Update volumes
+    auto degree_iter = thrust::make_transform_iterator(partition.Current(), DegreeExtractor());
+
+    thrust::reduce_by_key(
+        thrust::device,
+        // Keys
+        label_iter,
+        label_iter + gm.n,
+        // Values
+        degree_iter,
+        // Key Output (not needed)
+        thrust::make_discard_iterator(),
+        // Value Output
+        pm.getVolumes().begin(),
+        thrust::equal_to<NodeIx>(),
+        thrust::plus<EdgeIx>()
+    );
 }
 
 

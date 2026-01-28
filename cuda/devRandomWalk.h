@@ -54,6 +54,7 @@ void lazyRandomWalkKernel(
         NodeIx numNodes,
         const NodeIx* __restrict__ neighbors,
         const NodeData* __restrict__ nodeData,
+        const EdgeIx* __restrict__ activeDegrees,
         const frac_t* __restrict__ old_dist,
         frac_t* __restrict__ dist,
         uint64_t* __restrict__ packedKeys,
@@ -74,9 +75,11 @@ void lazyRandomWalkKernel(
     for (NodeIx j = data.rangeStart; j < rangeEnd; ++j) {
         const NodeIx neighbor = __ldg(&neighbors[j]);
         const NodeData nbData = nodeData[neighbor];
-        if(nbData.label == data.label && nbData.activeDegree != 0) {
+        const EdgeIx nbDeg = __ldg(&activeDegrees[neighbor]);
+
+        if(nbData.label == data.label && nbDeg != 0) {
             // inactive nodes have deg == 0
-            incoming_sum += (__ldg(&old_dist[neighbor]) / static_cast<frac_t>(nbData.activeDegree));
+            incoming_sum += (__ldg(&old_dist[neighbor]) / static_cast<frac_t>(nbDeg));
         }
     }
 
@@ -111,6 +114,7 @@ public:
     void step(GraphManager& gm,
           cub::DoubleBuffer<NodeData> partition,
           cub::DoubleBuffer<uint64_t> packedKeys,
+          thrust::device_vector<EdgeIx>& activeDegrees,
           cudaStream_t stream = nullptr
     ) {
         old_dist.swap(dist);
@@ -121,6 +125,7 @@ public:
                 numNodes,
                 thrust::raw_pointer_cast(gm.getNeighbors().data()),
                 partition.Current(),
+                thrust::raw_pointer_cast(activeDegrees.data()),
                 thrust::raw_pointer_cast(old_dist.data()),
                 thrust::raw_pointer_cast(dist.data()),
                 packedKeys.Current(),
@@ -128,7 +133,27 @@ public:
         );
     }
 
-//    void stepSlow(DevGraph gr, cudaStream_t stream = nullptr) {
+
+//    void newStep(GraphManager& gm,
+//              cub::DoubleBuffer<NodeData> partition,
+//              cub::DoubleBuffer<uint64_t> packedKeys,
+//              cudaStream_t stream = nullptr
+//    ) {
+//
+//        thrust::transform(thrust::cuda::par.on(stream),
+//                          old_dist.begin(), old_dist.end(),
+//                          gr.active_degrees,
+//                          node_val.begin(),
+//            [move_weight] __device__ (frac_t d, EdgeIx deg) {
+//                return (deg > 0) ? (d / static_cast<frac_t>(deg)) * move_weight : 0.0f;
+//            }
+//        );
+//
+//    }
+
+
+
+//    void stepSlow(GraphManager& gm, cudaStream_t stream = nullptr) {
 //        old_dist.swap(dist);
 //
 //        const frac_t stay_weight = rw_stay;
@@ -146,6 +171,7 @@ public:
 //
 //        frac_t* raw_node_vals = thrust::raw_pointer_cast(node_val.data());
 //        frac_t* raw_dist_out = thrust::raw_pointer_cast(dist.data());
+//        NodeIx* raw_ranges = thrust::raw_pointer_cast(gm.getRanges().data());
 //
 //        auto v_mapped_iter = thrust::make_permutation_iterator(raw_node_vals, gr.neighbors);
 //
@@ -156,8 +182,8 @@ public:
 //                v_mapped_iter,
 //                raw_dist_out,
 //                static_cast<int>(numNodes),
-//                gr.ranges,
-//                gr.ranges + 1,
+//                raw_ranges,
+//                raw_ranges + 1,
 //                stream
 //        );
 //

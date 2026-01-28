@@ -36,7 +36,6 @@ struct SweepCutData {
 struct NodeData {
     NodeIx nix;
     NodeIx label;
-    EdgeIx activeDegree;
     EdgeIx degree;
     NodeIx rangeStart;
 
