@@ -86,8 +86,6 @@ void lazyRandomWalkKernel(
     // FOR SWEEP CUT:
     // Already Pack label and rw value into packedKeys for sorting!!
     packedKeys[i] = packKey(data.label, nodeVal);
-
-//    packedKeys[i] = ((uint64_t) data.label << 32) | (uint64_t)floatToOrderedInt(nodeVal);
 }
 
 class RandomWalkManager {

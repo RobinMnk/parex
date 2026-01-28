@@ -92,7 +92,10 @@ void nodeDiffKernel_Sparse(
         }
     }
 
-    nodeData[i].edgeDiff = nodeContribution;
+    // Initialize data fields for the sweep cut
+    nodeData[i].prefixEdgeDiff = nodeContribution;
+    nodeData[i].prefixVolume = data.degree;
+    nodeData[i].offsetInCluster = 1;
 }
 // This needs all random walk values done -> has to be computed after!
 
@@ -104,8 +107,6 @@ class SweepCutManager {
     thrust::device_vector<uint64_t> packedKeysIn;
     thrust::device_vector<uint64_t> packedKeysOut;
     cub::DoubleBuffer<uint64_t> packedKeys;
-
-    thrust::device_vector<PrefixValues> prefixSums;
 
     // CUB Buffers
     size_t temp_storage_bytes = 0;
@@ -134,11 +135,14 @@ public:
         packedKeysOut(n),
         packedKeys(thrust::raw_pointer_cast(packedKeysIn.data()),
                    thrust::raw_pointer_cast(packedKeysOut.data())),
-        prefixSums(n),
         d_unique_labels(n),
         sweepCuts(n)
     {
         initializeCUB(n, pm);
+    }
+
+    thrust::device_vector<SweepCutData> getSweepCuts() {
+        return sweepCuts;
     }
 
 
@@ -151,17 +155,14 @@ public:
     AllSweepCuts resultToCPU(NodeIx numClusters) {
         std::vector<NodeIx> clusterIds(numClusters);
         std::vector<SweepCutData> cuts(numClusters);
-        std::vector<PrefixValues> pS(prefixSums.size());
         thrust::copy(d_unique_labels.begin(), d_unique_labels.begin() + numClusters, clusterIds.begin());
         thrust::copy(sweepCuts.begin(), sweepCuts.begin() + numClusters, cuts.begin());
-        thrust::copy(prefixSums.begin(), prefixSums.begin() + prefixSums.size(), pS.begin());
-        return {clusterIds, cuts, pS};
+        return {clusterIds, cuts};
     }
 
     cub::DoubleBuffer<uint64_t>& getKeyBuffer() {
         return packedKeys;
     }
-
 };
 
 
@@ -182,14 +183,38 @@ struct ArgMinOp {
 struct PrefixSumOp {
     __host__ __device__
     PrefixValues operator()(const PrefixValues& a, const PrefixValues& b) const {
-        return { a.edgeDiff + b.edgeDiff, a.volume + b.volume, b.nix };
+        return { a.edgeDiff + b.edgeDiff, a.volume + b.volume, (a.offset + b.offset) + 1 };
     }
 };
 
-struct PrefixExtractor {
+struct NodeDataScanOp {
     __host__ __device__
-    PrefixValues operator()(const NodeData& n) const {
-        return { n.edgeDiff, n.degree, n.nix };
+    NodeData operator()(const NodeData& a, const NodeData& b) const {
+        NodeData res = b;
+        res.prefixEdgeDiff += a.prefixEdgeDiff;
+        res.prefixVolume += a.prefixVolume;
+        res.offsetInCluster += a.offsetInCluster;
+        return res;
+    }
+};
+
+struct ReduceOp {
+    const EdgeIx* clusterVolumesPtr;
+
+    explicit ReduceOp(const EdgeIx* volumesPtr) : clusterVolumesPtr(volumesPtr) {}
+
+    __host__ __device__
+    SweepCutData operator()(const NodeData& nodeData) const {
+        const EdgeIx totalVol  = clusterVolumesPtr[nodeData.label];
+
+        const EdgeIx edgeDiff = nodeData.prefixEdgeDiff;
+        const EdgeIx prefixVol = nodeData.prefixVolume;
+
+        // min(vol, totalVol - vol)
+        const EdgeIx denom = (prefixVol < totalVol - prefixVol) ? prefixVol : (totalVol - prefixVol);
+        const float sparsity  = (denom > 0) ? (static_cast<float>(edgeDiff) / static_cast<float>(denom)) : 2.0f;
+
+        return { nodeData.label, sparsity , nodeData.offsetInCluster };
     }
 };
 
@@ -237,79 +262,57 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
         // Keys
         thrust::make_transform_iterator(sortedKeys, LabelExtractor()),
         thrust::make_transform_iterator(sortedKeys + gm.n, LabelExtractor()),
-        // Values (Input)
-        thrust::make_transform_iterator(sortedData, PrefixExtractor()),
-        // Output
-        prefixSums.begin(),
+        // Values
+        sortedData,      // Input Begin
+        sortedData,      // Output Begin (In-place!)
         thrust::equal_to<NodeIx>(),
-        PrefixSumOp()
+        NodeDataScanOp()
     );
 
     // 1. Get raw pointers for the lambda capture
-    EdgeIx* clusterVolumesPtr       = thrust::raw_pointer_cast(pm.getVolumes().data());
-    PrefixValues* prefixSumsPtr     = thrust::raw_pointer_cast(prefixSums.data());
 
     // 2. Define the Conductance + Indexing logic in a single iterator
-    auto conductance_index_iter = thrust::make_transform_iterator(
-            thrust::make_counting_iterator<int>(0),
-            [clusterVolumesPtr, sortedKeys, prefixSumsPtr] __device__ (int i) -> SweepCutData {
-                const uint64_t key = sortedKeys[i];
-                const NodeIx label = static_cast<NodeIx>(key >> 32);
-                const EdgeIx totalVol  = clusterVolumesPtr[label];
-
-                const PrefixValues pv = prefixSumsPtr[i];
-                const EdgeIx edgeDiff = pv.edgeDiff;
-                const EdgeIx prefixVol = pv.volume;
-
-                // TODO: Check if label == pv.label!!
-
-                // min(vol, totalVol - vol)
-                const EdgeIx denom = (prefixVol < totalVol - prefixVol) ? prefixVol : (totalVol - prefixVol);
-                const float sparsity  = (denom > 0) ? (static_cast<float>(edgeDiff) / static_cast<float>(denom)) : 2.0f;
-
-                return { sparsity , i };
-            }
-    );
+//    auto conductance_index_iter = thrust::make_transform_iterator(
+//            thrust::make_counting_iterator<int>(0),
+//            [clusterVolumesPtr, sortedKeys, prefixSumsPtr] __device__ (int i) -> SweepCutData {
+//                const uint64_t key = sortedKeys[i];
+//                const NodeIx label = static_cast<NodeIx>(key >> 32);
+//                const EdgeIx totalVol  = clusterVolumesPtr[label];
+//
+//                const PrefixValues pv = prefixSumsPtr[i];
+//                const EdgeIx edgeDiff = pv.edgeDiff;
+//                const EdgeIx prefixVol = pv.volume;
+//
+//                // TODO: Check if label == pv.label!!
+//
+//                // min(vol, totalVol - vol)
+//                const EdgeIx denom = (prefixVol < totalVol - prefixVol) ? prefixVol : (totalVol - prefixVol);
+//                const float sparsity  = (denom > 0) ? (static_cast<float>(edgeDiff) / static_cast<float>(denom)) : 2.0f;
+//
+//                return { sparsity , i };
+//            }
+//    );
 
     /**
      * STEP 3: REDUCE
      */
 
+    const EdgeIx* clusterVolumesPtr = thrust::raw_pointer_cast(pm.getVolumes().data());
+
     thrust::reduce_by_key(
-            thrust::device,
-            // Keys
-            thrust::make_transform_iterator(sortedKeys, LabelExtractor()),
-            thrust::make_transform_iterator(sortedKeys + gm.n, LabelExtractor()),
-            // Values
-            conductance_index_iter,
-            // Output Label
-            d_unique_labels.begin(),
-            // Output Values
-            sweepCuts.begin(),
-            thrust::equal_to<NodeIx>(),
-            ArgMinOp()
-    );
-
-    /**
-     * STEP 4: SCATTER
-     * Restore invariant in Partition such that
-     * partition[i].nix == i
-     */
-
-    NodeData* in  = partition.Current();
-    NodeData* out = partition.Alternate();
-
-    thrust::for_each_n(
         thrust::device,
-        thrust::make_counting_iterator<NodeIx>(0),
-        numNodes,
-        [in, out] __device__ (NodeIx k) {
-            const NodeData nd = in[k];
-            out[nd.nix] = nd;
-        }
+        // Keys
+        thrust::make_transform_iterator(sortedKeys, LabelExtractor()),
+        thrust::make_transform_iterator(sortedKeys + gm.n, LabelExtractor()),
+        // Values
+        thrust::make_transform_iterator(sortedData, ReduceOp(clusterVolumesPtr)),
+        // Output Label
+        d_unique_labels.begin(),
+        // Output Values
+        sweepCuts.begin(),
+        thrust::equal_to<NodeIx>(),
+        ArgMinOp()
     );
-
-    partition.selector ^= 1;
 }
 
 

@@ -53,6 +53,10 @@ public:
         sc->compute(*gm, *pt, rw->randomWalkValues());
     }
 
+    void fixupPartition() {
+        pt->scatter();
+    }
+
     AllSweepCuts getSweepCuts() {
         return sc->resultToCPU(gm->numClusters);
     }
@@ -118,6 +122,8 @@ std::vector<EdgeIx> CudaDeviceManager::downloadDegrees() { return impl->download
 void CudaDeviceManager::iterateRandomWalk() { impl->iterateRandomWalk(); }
 
 void CudaDeviceManager::computeSweepCuts() { impl->computeSweepCuts(); }
+
+void CudaDeviceManager::fixupPartition() { impl->fixupPartition(); }
 
 AllSweepCuts CudaDeviceManager::readSweepCuts() { return impl->getSweepCuts(); }
 

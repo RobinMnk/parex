@@ -22,14 +22,15 @@ struct InitFunctor {
             static_cast<NodeIx>(i),
             static_cast<NodeIx>(0),
             end - start,
-            start,
-            end - start
+            end - start,
+            start
         };
     }
 };
 
 
 class PartitionManager {
+    NodeIx numNodes;
     thrust::device_vector<NodeData> partition1;
     thrust::device_vector<NodeData> partition2;
     cub::DoubleBuffer<NodeData> partition;
@@ -42,6 +43,7 @@ class PartitionManager {
 public:
 
     explicit PartitionManager(GraphManager& gm) :
+        numNodes(gm.n),
         partition1(gm.n),
         partition2(gm.n),
         partition(thrust::raw_pointer_cast(partition1.data()),
@@ -57,6 +59,53 @@ public:
             InitFunctor(thrust::raw_pointer_cast(gm.getRanges().data()))
         );
     }
+
+    void cutClusters(thrust::device_vector<SweepCutData>& sweepCuts) {
+
+        SweepCutData* sweeepCutPtr = thrust::raw_pointer_cast(sweepCuts.data());
+        auto numNewClusters = sweepCuts.size();
+
+        thrust::for_each_n(
+                thrust::device,
+                partition.Current(),
+                numNodes,
+                [sweeepCutPtr, numNewClusters] __device__ (NodeData& data) {
+                    const NodeIx clusterId = data.label;
+                    SweepCutData sc = sweeepCutPtr[clusterId];
+                    if(data.offsetInCluster > sc.offset) {
+                        data.label += numNewClusters;
+                    }
+                }
+        );
+
+
+    }
+
+
+
+    /**
+     * Restore invariant in Partition such that
+     * partition[i].nix == i
+     */
+    void scatter() {
+        NodeData* in  = partition.Current();
+        NodeData* out = partition.Alternate();
+
+        thrust::for_each_n(
+                thrust::device,
+                thrust::make_counting_iterator<NodeIx>(0),
+                numNodes,
+                [in, out] __device__ (NodeIx k) {
+                    const NodeData nd = in[k];
+                    out[nd.nix] = nd;
+                }
+        );
+
+        partition.selector ^= 1;
+    }
+
+
+
 
     cub::DoubleBuffer<NodeData>& getPartitionView() {
         return partition;

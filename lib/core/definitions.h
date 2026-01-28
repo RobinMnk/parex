@@ -28,14 +28,15 @@ using frac_t        = float;
 const int threads = 256;
 
 struct SweepCutData {
+    NodeIx clusterId;
     float sparsity;
-    int offset;
+    NodeIx offset;
 };
 
 struct PrefixValues {
     int edgeDiff;
     EdgeIx volume;
-    NodeIx nix;
+    NodeIx offset;
 
     bool operator==(const PrefixValues& other) const {
         return edgeDiff == other.edgeDiff && volume == other.volume;
@@ -46,11 +47,12 @@ struct NodeData {
     NodeIx nix;
     NodeIx label;
     EdgeIx activeDegree;
+    EdgeIx degree;
     NodeIx rangeStart;
 
-    EdgeIx degree;
-    int edgeDiff;
-    uint32_t padding[2]; // Padding
+    EdgeIx prefixVolume;
+    int prefixEdgeDiff;
+    NodeIx offsetInCluster;
     // Potentially: volume of cluster (probably needs remaining uint32_t)
 };
 
@@ -58,7 +60,7 @@ struct NodeData {
 struct AllSweepCuts {
     std::vector<NodeIx> clusterIds;
     std::vector<SweepCutData> cuts;
-    std::vector<PrefixValues> prefixSums;
+//    std::vector<PrefixValues> prefixSums;
 };
 
 
