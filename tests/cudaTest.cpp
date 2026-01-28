@@ -16,7 +16,7 @@ protected:
     static CudaDeviceManager cuda;
 
     [[maybe_unused]] static void SetUpTestSuite() {
-        graph = readDynGraph("../../graphs/uk.mtx").finalize();
+        graph = readDynGraph("../../graphs/web-google.mtx").finalize();
         cuda.initialize(graph);
     }
 };
@@ -64,8 +64,8 @@ TEST_P(CudaTest, RandomWalk) {
 INSTANTIATE_TEST_SUITE_P(
     Iterations,
     CudaTest,
-    testing::Values(2)
-//    testing::Values(0, 1, 2, 4, 8, 16, 64, 128, 256)
+//    testing::Values(2)
+    testing::Values(0, 1, 2, 4, 8, 16, 64, 128, 256)
 );
 
 
@@ -227,7 +227,6 @@ TEST_P(CudaTest, RepeatedCuts) {
     rw.setData(rwData);
     Partition part(&graph);
 
-
     std::vector<NodeIx> active{0};
 
     for(int i = 0; i < GetParam(); i++) {
@@ -246,10 +245,11 @@ TEST_P(CudaTest, RepeatedCuts) {
             ASSERT_NEAR(y[nix], z[nix], 0.00001);
         }
 
-
-        // TODO: this only cuts cluster 0
-        SweepCut sweepCut = part.sweepCut(0, z);
-        part.split<false, false>(0, sweepCut.offset, active);
+        NodeIx numClusters = active.size();
+        for(NodeIx clusterId = 0; clusterId < numClusters; clusterId++) {
+            SweepCut sweepCut = part.sweepCut(clusterId, z);
+            part.split<false, false>(clusterId, sweepCut.offset, active);
+        }
 
         std::vector<NodeIx> expectedLabels = getLabels(graph, part);
 
