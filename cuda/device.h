@@ -38,7 +38,7 @@ public:
     }
 
     void iterateRandomWalk() {
-        rw->step(*gm, thrust::raw_pointer_cast(pt->partition1.data()), thrust::raw_pointer_cast(sc->packedKeysIn.data()));
+        rw->step(*gm, pt->getPartitionView(), sc->getKeyBuffer());
     }
 
     std::vector<frac_t> readRandomWalkValues() {

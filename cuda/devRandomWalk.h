@@ -29,20 +29,13 @@ struct NormalDistributionFunctor {
 
     __host__ __device__
     frac_t operator()(const NodeIx idx) const {
-//        thrust::default_random_engine rng(base_seed);
-//        thrust::normal_distribution<frac_t> dist;
-//        rng.discard(idx);
-//        return dist(rng);
-        return static_cast<frac_t>(idx) / 4096;
+        thrust::default_random_engine rng(base_seed);
+        thrust::normal_distribution<frac_t> dist;
+        rng.discard(idx);
+        return dist(rng);
     }
 };
 
-__host__ __device__
-uint32_t floatToOrderedInt(float v) {
-    uint32_t i = *((uint32_t*)&v);
-    uint32_t mask = (i >> 31 != 0) ? 0xffffffff : 0x80000000;
-    return i ^ mask;
-}
 
 __device__
 inline uint64_t packKey(NodeIx label, float v) {
@@ -117,8 +110,8 @@ public:
     }
 
     void step(GraphManager& gm,
-          NodeData* partitionPtr,
-          uint64_t* packedKeysPtr,
+          cub::DoubleBuffer<NodeData> partition,
+          cub::DoubleBuffer<uint64_t> packedKeys,
           cudaStream_t stream = nullptr
     ) {
         old_dist.swap(dist);
@@ -128,10 +121,10 @@ public:
         lazyRandomWalkKernel<<<blocksPerGrid, threads, 0, stream>>>(
                 numNodes,
                 thrust::raw_pointer_cast(gm.getNeighbors().data()),
-                partitionPtr,
+                partition.Current(),
                 thrust::raw_pointer_cast(old_dist.data()),
                 thrust::raw_pointer_cast(dist.data()),
-                packedKeysPtr,
+                packedKeys.Current(),
                 rw_stay
         );
     }

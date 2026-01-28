@@ -30,7 +30,6 @@ struct InitFunctor {
 
 
 class PartitionManager {
-public:
     thrust::device_vector<NodeData> partition1;
     thrust::device_vector<NodeData> partition2;
     cub::DoubleBuffer<NodeData> partition;

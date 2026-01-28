@@ -98,7 +98,6 @@ void nodeDiffKernel_Sparse(
 
 
 class SweepCutManager {
-public:
     NodeIx numNodes;
 
     // Buffers
@@ -117,14 +116,12 @@ public:
     thrust::device_vector<NodeIx> d_unique_labels;
     thrust::device_vector<SweepCutData> sweepCuts;
 
-    void initializeCUB(NodeIx numNodes, PartitionManager& pm) {
+    void initializeCUB(NodeIx n, PartitionManager& pm) {
         cub::DeviceRadixSort::SortPairs(
             nullptr, temp_storage_bytes,
-            thrust::raw_pointer_cast(packedKeysIn.data()),
-            thrust::raw_pointer_cast(packedKeysOut.data()),
-            thrust::raw_pointer_cast(pm.partition1.data()),
-            thrust::raw_pointer_cast(pm.partition2.data()),
-            static_cast<int>(numNodes)
+            packedKeys,
+            pm.getPartitionView(),
+            static_cast<int>(n)
         );
 
         cudaMalloc(&d_temp_storage, temp_storage_bytes);
@@ -219,46 +216,15 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
      *  STEP 1: SORT
      */
 
-//    std::vector<uint64_t> keys(20);
-//    thrust::copy(
-//            thrust::device_pointer_cast(packedKeysIn.data()),
-//            thrust::device_pointer_cast(packedKeysIn.data()) + 20,
-//            keys.begin()
-//    );
-//    std::cout << "KEYS BEFORE: \t";
-//    for(int i = 0; i < 20; i++) std::cout << keys[i] << ", ";
-//    std::cout << std::endl;
-
     cub::DeviceRadixSort::SortPairs(
         d_temp_storage, temp_storage_bytes,
-        thrust::raw_pointer_cast(packedKeysIn.data()),
-        thrust::raw_pointer_cast(packedKeysOut.data()),
-        thrust::raw_pointer_cast(pm.partition1.data()),
-        thrust::raw_pointer_cast(pm.partition2.data()),
+        packedKeys,
+        partition,
         static_cast<int>(gm.n)
     );
 
-
-//    thrust::copy(
-//            thrust::device_pointer_cast(packedKeysOut.data()),
-//            thrust::device_pointer_cast(packedKeysOut.data()) + 20,
-//            keys.begin()
-//    );
-//    std::cout << "KEYS AFTER: \t";
-//    for(int i = 0; i < 20; i++) std::cout << keys[i] << ", ";
-//    std::cout << std::endl;
-
-    NodeData* sortedData = thrust::raw_pointer_cast(pm.partition2.data());
-    uint64_t* sortedKeys = thrust::raw_pointer_cast(packedKeysOut.data());
-
-//    thrust::copy(
-//            thrust::device_pointer_cast(packedKeys.Current()),
-//            thrust::device_pointer_cast(packedKeys.Current()) + 10,
-//            keys.begin()
-//    );
-//    std::cout << "KEYS AFTER: \t";
-//    for(int i = 0; i < 10; i++) std::cout << keys[i] << ", ";
-//    std::cout << std::endl;
+    NodeData* sortedData = partition.Current();
+    uint64_t* sortedKeys = packedKeys.Current();
 
     /**
      *  STEP 2: SCAN
@@ -283,11 +249,6 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
     EdgeIx* clusterVolumesPtr       = thrust::raw_pointer_cast(pm.getVolumes().data());
     PrefixValues* prefixSumsPtr     = thrust::raw_pointer_cast(prefixSums.data());
 
-    thrust::device_ptr<EdgeIx> dev_ptr(clusterVolumesPtr);
-    EdgeIx firstVol = dev_ptr[0]; // This triggers an implicit cudaMemcpy
-
-    std::cout << "Cluster 0 Volume: " << firstVol << std::endl;
-
     // 2. Define the Conductance + Indexing logic in a single iterator
     auto conductance_index_iter = thrust::make_transform_iterator(
             thrust::make_counting_iterator<int>(0),
@@ -304,15 +265,16 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
 
                 // min(vol, totalVol - vol)
                 const EdgeIx denom = (prefixVol < totalVol - prefixVol) ? prefixVol : (totalVol - prefixVol);
-                bool pred = denom > 0;
-                const float sparsity  = pred ? (static_cast<float>(edgeDiff) / static_cast<float>(denom)) : 1e30f;
+                const float sparsity  = (denom > 0) ? (static_cast<float>(edgeDiff) / static_cast<float>(denom)) : 2.0f;
 
                 return { sparsity , i };
             }
     );
 
+    /**
+     * STEP 3: REDUCE
+     */
 
-// 3. One-pass Reduction to find the best cut per label
     thrust::reduce_by_key(
             thrust::device,
             // Keys
@@ -328,7 +290,11 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
             ArgMinOp()
     );
 
-
+    /**
+     * STEP 4: SCATTER
+     * Restore invariant in Partition such that
+     * partition[i].nix == i
+     */
 
     NodeData* in  = partition.Current();
     NodeData* out = partition.Alternate();
