@@ -33,6 +33,7 @@ struct NormalDistributionFunctor {
         thrust::normal_distribution<frac_t> dist;
         rng.discard(idx);
         return dist(rng);
+//        return static_cast<frac_t>(idx) / 4096;
     }
 };
 

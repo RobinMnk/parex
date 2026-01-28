@@ -60,25 +60,22 @@ public:
         );
     }
 
-    void cutClusters(thrust::device_vector<SweepCutData>& sweepCuts) {
+    void cutClusters(thrust::device_vector<SweepCutData>& sweepCuts, NodeIx numNewClusters) {
 
-        SweepCutData* sweeepCutPtr = thrust::raw_pointer_cast(sweepCuts.data());
-        auto numNewClusters = sweepCuts.size();
+        SweepCutData* sweepCutPtr = thrust::raw_pointer_cast(sweepCuts.data());
 
         thrust::for_each_n(
                 thrust::device,
                 partition.Current(),
                 numNodes,
-                [sweeepCutPtr, numNewClusters] __device__ (NodeData& data) {
+                [sweepCutPtr, numNewClusters] __device__ (NodeData& data) {
                     const NodeIx clusterId = data.label;
-                    SweepCutData sc = sweeepCutPtr[clusterId];
+                    SweepCutData sc = sweepCutPtr[clusterId];
                     if(data.offsetInCluster > sc.offset) {
                         data.label += numNewClusters;
                     }
                 }
         );
-
-
     }
 
 

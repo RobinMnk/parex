@@ -102,6 +102,7 @@ void nodeDiffKernel_Sparse(
 
 class SweepCutManager {
     NodeIx numNodes;
+    NodeIx numActiveClusters;
 
     // Buffers
     thrust::device_vector<uint64_t> packedKeysIn;
@@ -141,10 +142,12 @@ public:
         initializeCUB(n, pm);
     }
 
-    thrust::device_vector<SweepCutData> getSweepCuts() {
+    thrust::device_vector<SweepCutData>& getSweepCuts() {
         return sweepCuts;
     }
-
+    NodeIx getNumActiveClusters() {
+        return numActiveClusters;
+    }
 
     void compute(
         GraphManager& gm,
@@ -177,13 +180,6 @@ struct ArgMinOp {
     __host__ __device__
     SweepCutData operator()(const SweepCutData& a, const SweepCutData& b) const {
         return (a.sparsity < b.sparsity) ? a : b;
-    }
-};
-
-struct PrefixSumOp {
-    __host__ __device__
-    PrefixValues operator()(const PrefixValues& a, const PrefixValues& b) const {
-        return { a.edgeDiff + b.edgeDiff, a.volume + b.volume, (a.offset + b.offset) + 1 };
     }
 };
 
@@ -253,9 +249,8 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
 
     /**
      *  STEP 2: SCAN
-     * - Extract edgeDiff and activeDegree from every node
-     * - Perform separate prefix sum on both
-     * - save outcome to prefixSums
+     * - Perform separate prefix sum on edgeDiff and volume
+     * - save outcome in-place into partition
      */
     thrust::inclusive_scan_by_key(
         thrust::device,
@@ -269,37 +264,13 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
         NodeDataScanOp()
     );
 
-    // 1. Get raw pointers for the lambda capture
-
-    // 2. Define the Conductance + Indexing logic in a single iterator
-//    auto conductance_index_iter = thrust::make_transform_iterator(
-//            thrust::make_counting_iterator<int>(0),
-//            [clusterVolumesPtr, sortedKeys, prefixSumsPtr] __device__ (int i) -> SweepCutData {
-//                const uint64_t key = sortedKeys[i];
-//                const NodeIx label = static_cast<NodeIx>(key >> 32);
-//                const EdgeIx totalVol  = clusterVolumesPtr[label];
-//
-//                const PrefixValues pv = prefixSumsPtr[i];
-//                const EdgeIx edgeDiff = pv.edgeDiff;
-//                const EdgeIx prefixVol = pv.volume;
-//
-//                // TODO: Check if label == pv.label!!
-//
-//                // min(vol, totalVol - vol)
-//                const EdgeIx denom = (prefixVol < totalVol - prefixVol) ? prefixVol : (totalVol - prefixVol);
-//                const float sparsity  = (denom > 0) ? (static_cast<float>(edgeDiff) / static_cast<float>(denom)) : 2.0f;
-//
-//                return { sparsity , i };
-//            }
-//    );
-
     /**
      * STEP 3: REDUCE
      */
 
     const EdgeIx* clusterVolumesPtr = thrust::raw_pointer_cast(pm.getVolumes().data());
 
-    thrust::reduce_by_key(
+    auto end_pair = thrust::reduce_by_key(
         thrust::device,
         // Keys
         thrust::make_transform_iterator(sortedKeys, LabelExtractor()),
@@ -313,6 +284,8 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
         thrust::equal_to<NodeIx>(),
         ArgMinOp()
     );
+
+    numActiveClusters = static_cast<NodeIx>(thrust::distance(sweepCuts.begin(), end_pair.second));
 }
 
 

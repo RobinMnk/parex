@@ -33,16 +33,6 @@ struct SweepCutData {
     NodeIx offset;
 };
 
-struct PrefixValues {
-    int edgeDiff;
-    EdgeIx volume;
-    NodeIx offset;
-
-    bool operator==(const PrefixValues& other) const {
-        return edgeDiff == other.edgeDiff && volume == other.volume;
-    }
-};
-
 struct NodeData {
     NodeIx nix;
     NodeIx label;
@@ -53,7 +43,6 @@ struct NodeData {
     EdgeIx prefixVolume;
     int prefixEdgeDiff;
     NodeIx offsetInCluster;
-    // Potentially: volume of cluster (probably needs remaining uint32_t)
 };
 
 

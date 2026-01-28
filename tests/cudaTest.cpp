@@ -151,11 +151,54 @@ TEST_P(CudaTest, SweepCut) {
         EXPECT_NEAR(result.cuts[0].sparsity, expected.sparsity, 0.00000001);
     }
 }
-//
-//INSTANTIATE_TEST_SUITE_P(
-//        SC_,
-//        CudaTest,
-//        testing::Values(1, 10, 50, 100)
-//);
+
+std::vector<NodeIx> getLabels(const Graph& graph, const Partition& part) {
+    NodeIx nix = 0;
+    // to which clusterId does a nix belong
+    std::vector<NodeIx> clusterLookup(graph.numNodes, graph.numNodes + 1);
+    for(const Cluster& cluster: part) {
+        for (const ClusterVertex& cv: cluster) {
+            clusterLookup[cv.nix] = nix;
+        }
+        nix++;
+    }
+    return clusterLookup;
+}
+
+
+TEST_F(CudaTest, CutTest) {
+    auto rwData = cuda.readRandomWalkValues();
+    RandomWalk rw(graph.numNodes);
+    rw.setData(rwData);
+    Partition part(&graph);
+
+    // take 10 steps
+    for(int i = 0; i < 10; i++) {
+        rw.iterate(part, {0});
+        cuda.iterateRandomWalk();
+    }
+
+    auto y = cuda.readRandomWalkValues();
+    auto z = rw.values();
+
+    for (NodeIx nix = 0; nix < graph.numNodes; nix++) {
+        ASSERT_NEAR(y[nix], z[nix], 0.00001);
+    }
+
+    SweepCut sweepCut = part.sweepCut(0, z);
+    std::vector<NodeIx> modified{0};
+    part.split<false, false>(0, sweepCut.offset, modified);
+    std::vector<NodeIx> expectedLabels = getLabels(graph, part);
+
+    cuda.computeSweepCuts();
+    cuda.cutClusters();
+    cuda.fixupPartition();
+
+    std::vector<NodeData> pt = cuda.downloadPartition();
+
+    for (NodeIx nix = 0; nix < graph.numNodes; nix++) {
+        EXPECT_EQ(pt[nix].label, expectedLabels[nix]) << " nix: " << nix;
+    }
+}
 
 

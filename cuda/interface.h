@@ -32,6 +32,7 @@ public:
 //    void inspectSweepCut(std::vector<EdgeIx>& prefixSums, std::vector<EdgeIx>& cutVolumes);
     AllSweepCuts readSweepCuts();
 
+    void cutClusters();
     void fixupPartition();
 
     void updateLabels(std::vector<NodeIx>& nodeLabels, NodeIx activeClusters);
