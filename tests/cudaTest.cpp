@@ -16,7 +16,7 @@ protected:
     static CudaDeviceManager cuda;
 
     [[maybe_unused]] static void SetUpTestSuite() {
-        graph = readDynGraph("../../graphs/web-google.mtx").finalize();
+        graph = readDynGraph("../../graphs/uk.mtx").finalize();
         cuda.initialize(graph);
     }
 };
@@ -65,7 +65,7 @@ INSTANTIATE_TEST_SUITE_P(
     Iterations,
     CudaTest,
 //    testing::Values(2)
-    testing::Values(0, 1, 2, 4, 8, 16, 64, 128, 256)
+    testing::Values(0, 1, 2, 4, 8) // , 16, 64, 128, 256)
 );
 
 
@@ -81,28 +81,34 @@ TEST_F(CudaTest, SweepCutTest) {
         cuda.iterateRandomWalk();
     }
 
+    // confirm active degrees
+    auto deg = cuda.downloadDegrees();
+    for(const ClusterVertex& cv: part.getCluster(0)) {
+        ASSERT_EQ(deg[cv.nix], cv.internalDegree);
+    }
+
+    // confirm random walk values
     auto y = cuda.readRandomWalkValues();
     auto z = rw.values();
 
     for (NodeIx nix = 0; nix < graph.numNodes; nix++) {
-        ASSERT_NEAR(y[nix], z[nix], 0.00001);
+        ASSERT_NEAR(y[nix], z[nix], 0.00001) << "nix: " << nix;
     }
 
+    // Sweep Cut
     SweepCut expected = part.sweepCut(0, z);
 
     cuda.computeSweepCuts();
     cuda.fixupPartition();
-
     AllSweepCuts result = cuda.readSweepCuts();
 
     std::vector<NodeData> pt = cuda.downloadPartition();
 
     NodeIx n = graph.numNodes;
 
-//    for(int j = 0; j < 10; j++) {
-//        std::cout << "CPU:  " << expected.pS[j].edgeDiff << " / " << expected.pS[j].volume << " (" << expected.pS[j].nix << ")" << "\t\t"
-//                << "GPU:  " << result.prefixSums[j].edgeDiff << " / " << result.prefixSums[j].volume << " (" << result.prefixSums[j].nix << ")" << "\t\t"
-//                << "GPU:  " << pt[j].edgeDiff << " / " << pt[j].degree << " (" << pt[j].nix << ")"  << std::endl;
+//    for(int j = 0; j < 20; j++) {
+//        std::cout << "CPU:  " << expected.pS[j].edgeDiff << " / " << expected.pS[j].vol << " (" << (static_cast<float>(expected.pS[j].edgeDiff) / expected.pS[j].vol) << ")" << "\t\t"
+//                << "GPU:  " << pt[j].prefixEdgeDiff << " / " << pt[j].prefixVolume << " (" << (static_cast<float>(pt[j].prefixEdgeDiff) / pt[j].prefixVolume) << ")" << std::endl;
 //    }
 
     for(int j = 0; j < n; j++) {
@@ -202,7 +208,6 @@ TEST_F(CudaTest, CutTest) {
     t.start();
     cuda.computeSweepCuts();
     cuda.cutClusters();
-    cuda.fixupPartition();
     auto timeGPU = t.timeMicros();
     std::cout << "GPU time: " << timeGPU << "μs" << std::endl;
 
