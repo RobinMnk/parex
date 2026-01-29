@@ -21,7 +21,7 @@ struct InitFunctor {
 
         return {
             static_cast<NodeIx>(i),
-            static_cast<NodeIx>(0),
+            0,
             end - start,
             start,
             end - start,
@@ -137,7 +137,7 @@ public:
         return aem;
     }
 
-    void cutClusters(thrust::device_vector<SweepCutData>& sweepCuts, NodeIx numNewClusters) {
+    void cutClusters(thrust::device_vector<SweepCutData>& sweepCuts, int numNewClusters) {
         SweepCutData* sweepCutPtr = thrust::raw_pointer_cast(sweepCuts.data());
 
         thrust::for_each_n(
@@ -145,9 +145,10 @@ public:
             partition.Current(),
             numNodes,
             [sweepCutPtr, numNewClusters] __device__ (NodeData& data) {
-                const NodeIx clusterId = data.label;
+                const int clusterId = data.label;
+                if (clusterId < 0) return; // this cluster is inactive
                 SweepCutData sc = sweepCutPtr[clusterId];
-                if(data.offsetInCluster > sc.offset) {
+                if(sc.sparsity < sc_threshold && data.offsetInCluster > sc.offset) {
                     data.label += numNewClusters;
                 }
             }

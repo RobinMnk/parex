@@ -21,7 +21,7 @@ void nodeDiffKernel(
         NodeIx numNodes,
         const NodeIx* __restrict__ ranges,
         const NodeIx* __restrict__ neighbors,
-        const NodeIx* __restrict__ labels,
+        const int* __restrict__ labels,
         const frac_t* __restrict__ values,
         frac_t* __restrict__ contributions
 ) {
@@ -30,7 +30,7 @@ void nodeDiffKernel(
 
     const NodeIx start = ranges[i];
     const NodeIx end = ranges[i+1];
-    const NodeIx myLabel = labels[i];
+    const int myLabel = labels[i];
     const frac_t myVal = values[i];
 
     frac_t localSum = 0.0f;
@@ -109,7 +109,7 @@ void nodeDiffKernel_Sparse(
 
 class SweepCutManager {
     NodeIx numNodes;
-    NodeIx numActiveClusters;
+    int numActiveClusters;
 
     // Buffers
     thrust::device_vector<uint64_t> packedKeysIn;
@@ -122,7 +122,7 @@ class SweepCutManager {
 
 
     // Output
-    thrust::device_vector<NodeIx> d_unique_labels;
+    thrust::device_vector<int> d_unique_labels;
     thrust::device_vector<SweepCutData> sweepCuts;
 
     void initializeCUB(NodeIx n, PartitionManager& pm) {
@@ -153,8 +153,12 @@ public:
         return sweepCuts;
     }
 
-    NodeIx getNumActiveClusters() const {
+    int getNumActiveClusters() const {
         return numActiveClusters;
+    }
+
+    auto& getLabels() const {
+        return d_unique_labels;
     }
 
     void compute(
@@ -164,7 +168,7 @@ public:
     );
 
     AllSweepCuts resultToCPU(NodeIx numClusters) {
-        std::vector<NodeIx> clusterIds(numClusters);
+        std::vector<int> clusterIds(numClusters);
         std::vector<SweepCutData> cuts(numClusters);
         thrust::copy(d_unique_labels.begin(), d_unique_labels.begin() + numClusters, clusterIds.begin());
         thrust::copy(sweepCuts.begin(), sweepCuts.begin() + numClusters, cuts.begin());
@@ -277,7 +281,7 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
         // Values
         sortedData,      // Input Begin
         sortedData,      // Output Begin (In-place!)
-        thrust::equal_to<NodeIx>(),
+        thrust::equal_to<int>(),
         NodeDataScanOp()
     );
 
@@ -297,7 +301,7 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
             thrust::make_discard_iterator(),
             // Output Values
             pm.getVolumes().begin(),
-            thrust::equal_to<NodeIx>(),
+            thrust::equal_to<int>(),
             thrust::plus<>()
     );
 
@@ -315,11 +319,11 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
         d_unique_labels.begin(),
         // Output Values
         sweepCuts.begin(),
-        thrust::equal_to<NodeIx>(),
+        thrust::equal_to<int>(),
         ArgMinOp()
     );
 
-    numActiveClusters = static_cast<NodeIx>(thrust::distance(sweepCuts.begin(), end_pair.second));
+    numActiveClusters = static_cast<int>(thrust::distance(sweepCuts.begin(), end_pair.second));
 }
 
 

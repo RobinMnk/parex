@@ -25,17 +25,19 @@ using EdgeIx        = unsigned int;
 using EdgeWeight    = unsigned int;
 using frac_t        = float;
 
-const int threads = 256;
+constexpr int threads = 256;
+
+constexpr float sc_threshold = 0.3;
 
 struct SweepCutData {
-    NodeIx clusterId;
+    int clusterId;
     float sparsity;
     NodeIx offset;
 };
 
 struct NodeData {
     NodeIx nix;
-    NodeIx label;
+    int label;  // a negative label represent inactive cluster
     EdgeIx degree;
     NodeIx rangeStart;
 
@@ -47,7 +49,7 @@ struct NodeData {
 
 
 struct AllSweepCuts {
-    std::vector<NodeIx> clusterIds;
+    std::vector<int> clusterIds;
     std::vector<SweepCutData> cuts;
 //    std::vector<PrefixValues> prefixSums;
 };

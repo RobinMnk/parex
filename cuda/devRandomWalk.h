@@ -9,7 +9,6 @@
 #include <thrust/transform.h>
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/random.h>
-#include <thrust/iterator/permutation_iterator.h>
 
 #include <curand_kernel.h>
 
@@ -19,8 +18,9 @@
 #include "devGraph.h"
 
 
-const unsigned int seed{6};
-const frac_t rw_stay = 0.1;
+constexpr unsigned int seed{6};
+constexpr frac_t rw_stay = 0.1;
+constexpr frac_t rw_threshold = 1e-4;
 
 struct NormalDistributionFunctor {
     unsigned int base_seed;
@@ -57,15 +57,14 @@ void lazyRandomWalkKernel(
         const EdgeIx* __restrict__ activeDegrees,
         const frac_t* __restrict__ old_dist,
         frac_t* __restrict__ dist,
-        uint64_t* __restrict__ packedKeys,
-        frac_t stay_weight
+        uint64_t* __restrict__ packedKeys
 ) {
     NodeIx i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= numNodes) return;
 
     // early exit for inactive nodes
     const NodeData data = nodeData[i];
-//    if(data.label < 0) return; // label < 0 considered inactive, but label is currently unsigned
+    // if(data.label < 0) return; // label < 0 considered inactive
 
     assert(data.nix == i && "nix mismatch!");
 
@@ -83,7 +82,7 @@ void lazyRandomWalkKernel(
         }
     }
 
-    const frac_t nodeVal = (incoming_sum * (1.0f - stay_weight)) + (old_dist[i] * stay_weight);
+    const frac_t nodeVal = (incoming_sum * (1.0f - rw_stay)) + (old_dist[i] * rw_stay);
 
     dist[i] = nodeVal;
     nodeData[i].activeDegree = activeDegrees[i];
@@ -93,17 +92,55 @@ void lazyRandomWalkKernel(
     packedKeys[i] = packKey(data.label, nodeVal);
 }
 
+
+struct LabelExtractorRW {
+    __host__ __device__
+    inline NodeIx operator()(const NodeData& data) const {
+        return data.label;
+    }
+};
+
+struct ClusterData {
+    float rwSum;
+    float maxPotential;
+    float minPotential;
+    NodeIx totalElements;
+};
+
+struct ClusterDataExtractorRW {
+    __host__ __device__
+    inline ClusterData operator()(frac_t rwValue) const {
+        return {rwValue, rwValue, rwValue, 1};
+    }
+};
+
+
+struct ClusterDataReduceOp {
+    __host__ __device__
+    ClusterData operator()(const ClusterData& a, const ClusterData& b) const {
+        return {
+            a.rwSum + b.rwSum,
+            a.maxPotential > b.maxPotential ? a.maxPotential : b.maxPotential,
+            a.minPotential < b.minPotential ? a.minPotential : b.minPotential,
+            a.totalElements + b.totalElements
+        };
+    }
+};
+
+
 class RandomWalkManager {
     thrust::device_vector<frac_t> dist;
     thrust::device_vector<frac_t> old_dist;
     thrust::device_vector<frac_t> node_val;
+
+    thrust::device_vector<ClusterData> clusterSums;
 
     NodeIx numNodes;
     void* d_temp_storage = nullptr;
     size_t temp_storage_bytes = 0;
 
 public:
-    explicit RandomWalkManager(NodeIx n) : dist(n), old_dist(n), node_val(n), numNodes(n) {
+    explicit RandomWalkManager(NodeIx n) : dist(n), old_dist(n), node_val(n), clusterSums(n), numNodes(n) {
         initRandomWalk(seed);
 //        prepare_cub(gr, static_cast<int>(n));
     }
@@ -112,12 +149,65 @@ public:
         if (d_temp_storage) cudaFree(d_temp_storage);
     }
 
+
+    void recenterAndDeactivateClusters(cub::DoubleBuffer<NodeData>& partition) {
+
+        NodeData* partitionPtr = partition.Current();
+        auto label_iter = thrust::make_transform_iterator(partitionPtr, LabelExtractorRW());
+
+        // find ClusterData for each cluster (to compute potential and average of each)
+        thrust::reduce_by_key(
+            thrust::device,
+            label_iter,
+            label_iter + numNodes,
+            thrust::make_transform_iterator(dist.begin(), ClusterDataExtractorRW()),
+            thrust::make_discard_iterator(),
+            clusterSums.begin(),
+            thrust::equal_to<int>(),
+            ClusterDataReduceOp()
+        );
+
+        // subtract average from each (active) node
+        const ClusterData* clusterDataPtr = thrust::raw_pointer_cast(clusterSums.data());
+
+        frac_t* distPtr = thrust::raw_pointer_cast(dist.data());
+
+        thrust::for_each_n(
+            thrust::device,
+            partition.Current(),
+            numNodes,
+            [clusterDataPtr, distPtr] __device__ (NodeData& data) {
+                const int label = data.label;
+
+                if (data.label < 0) return; // cluster already inactive
+
+                const ClusterData cd = clusterDataPtr[label];
+                const float clusterPotential = cd.maxPotential - cd.minPotential;
+
+                if (clusterPotential < rw_threshold) {
+                    // this cluster should be deactivated
+                    data.label = -label - 1;
+                } else {
+                    const float average = cd.rwSum / static_cast<float>(cd.totalElements);
+                    distPtr[data.nix] -= average; // TODO: write this diff to any unused field within NodeData! (save random write)
+                }
+            }
+        );
+    }
+
+
+
     void step(GraphManager& gm,
-          cub::DoubleBuffer<NodeData> partition,
-          cub::DoubleBuffer<uint64_t> packedKeys,
+          cub::DoubleBuffer<NodeData>& partition,
+          cub::DoubleBuffer<uint64_t>& packedKeys,
           thrust::device_vector<EdgeIx>& activeDegrees,
           cudaStream_t stream = nullptr
     ) {
+
+        // BEFORE:
+
+        // recenter clusters -> find potential -> deactivate if necessary!!
+
         old_dist.swap(dist);
 
         unsigned int blocksPerGrid = (numNodes + threads - 1) / threads;
@@ -129,8 +219,7 @@ public:
                 thrust::raw_pointer_cast(activeDegrees.data()),
                 thrust::raw_pointer_cast(old_dist.data()),
                 thrust::raw_pointer_cast(dist.data()),
-                packedKeys.Current(),
-                rw_stay
+                packedKeys.Current()
         );
     }
 

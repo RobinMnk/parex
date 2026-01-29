@@ -298,4 +298,14 @@ TEST_P(CudaTest, RepeatedCuts) {
 }
 
 
+TEST_F(CudaTest, ExpanderDecomposition) {
+    cuda.expanderDecomposition();
+    std::vector<NodeData> pt = cuda.downloadPartition();
+
+    for (NodeIx nix = 0; nix < graph.numNodes; nix++) {
+
+    }
+}
+
+
 

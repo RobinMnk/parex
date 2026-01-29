@@ -47,11 +47,15 @@ struct CudaDeviceManager::Impl {
     void cutClusters() {
         pt->cutClusters(sc->getSweepCuts(), sc->getNumActiveClusters());
 
+        rw->recenterAndDeactivateClusters(pt->getPartitionView());
+
         // absolutely crucial!!
         fixupPartition();
 
         pt->computeActiveDegrees(*gm);
     }
+
+    inline void expanderDecomposition();
 
     void fixupPartition() {
         pt->scatter();
@@ -78,6 +82,25 @@ struct CudaDeviceManager::Impl {
     }
 };
 
+
+void CudaDeviceManager::Impl::expanderDecomposition() {
+    std::vector<int> labels(gm->n);
+
+    while (labels[0] >= 0) {
+        iterateRandomWalk();
+        computeSweepCuts();
+        cutClusters();
+
+        auto& x = sc->getLabels();
+        thrust::copy(x.begin(), x.end(), labels.begin());
+        for (int y = 0; y < sc->getNumActiveClusters(); y++) std::cout << labels[y] << ", ";
+        std::cout << "\n" << std::endl;
+    }
+}
+
+
+
+
 CudaDeviceManager::CudaDeviceManager() : impl(std::make_unique<Impl>()) {}
 
 CudaDeviceManager::~CudaDeviceManager() = default;
@@ -96,6 +119,8 @@ void CudaDeviceManager::computeSweepCuts() { impl->computeSweepCuts(); }
 void CudaDeviceManager::cutClusters() { impl->cutClusters(); }
 
 void CudaDeviceManager::fixupPartition() { impl->fixupPartition(); }
+
+void CudaDeviceManager::expanderDecomposition() { impl->expanderDecomposition(); }
 
 AllSweepCuts CudaDeviceManager::readSweepCuts() { return impl->getSweepCuts(); }
 
