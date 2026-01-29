@@ -35,6 +35,8 @@ public:
     void cutClusters();
     void fixupPartition();
 
+    std::vector<int> downloadActiveEdgeMap();
+
     void updateLabels(std::vector<NodeIx>& nodeLabels, NodeIx activeClusters);
 
 //    void applyGraphUpdates(const std::vector<EdgeIx>& edgeDeletions, const std::vector<NodeUpdate>& updates);

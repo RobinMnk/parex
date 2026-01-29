@@ -31,22 +31,23 @@ public:
     std::vector<NodeIx> edges;          // size: 2 * numEdges
     std::vector<EdgeIx> ranges;         // size: numNodes + 1
     std::vector<EdgeWeight> weights;    // size: numNodes
-//    std::vector<EdgeIx> map; // in an undirected graph: maps edge in one direction to its counterpart edge
+    std::vector<EdgeIx> map;            // in an undirected graph: maps edge in one direction to its counterpart edge
 //    std::vector<EdgeIx> edgeToNode;
 
     NodeIx numNodes;
     EdgeIx numEdges;
 
-    Graph() : edges{}, ranges{}, weights{}, numNodes{0}, numEdges{0} { }
+    Graph() : edges{}, ranges{}, weights{}, map{}, numNodes{0}, numEdges{0} { }
 
-    Graph(NodeIx n, EdgeIx m) : edges(2 * m), ranges(n + 1), weights(2 * m, 1), numNodes{n}, numEdges{m} { }
+    Graph(NodeIx n, EdgeIx m) : edges(2 * m), ranges(n + 1), weights(2 * m, 1), map(2 * m), numNodes{n}, numEdges{m} { }
 
-    Graph(std::vector<NodeIx>&& ed, std::vector<EdgeIx>&& rg, NodeIx nNodes, EdgeIx nEdges) :
-            edges(std::move(ed)), ranges(std::move(rg)), weights(2 * nEdges, 1), numNodes{nNodes}, numEdges{nEdges} {
+    Graph(std::vector<NodeIx>&& ed, std::vector<EdgeIx>&& rg, std::vector<EdgeIx>&& mp, NodeIx nNodes, EdgeIx nEdges) :
+            edges(std::move(ed)), ranges(std::move(rg)), weights(2 * nEdges, 1), map(std::move(mp)), numNodes{nNodes}, numEdges{nEdges} {
     }
-    Graph(std::vector<NodeIx>&& ed, std::vector<EdgeIx>&& rg, std::vector<EdgeWeight>&& wgt, NodeIx nNodes, EdgeIx nEdges) :
-            edges(std::move(ed)), ranges(std::move(rg)), weights(std::move(wgt)), numNodes{nNodes}, numEdges{nEdges} {
-    }
+
+//    Graph(std::vector<NodeIx>&& ed, std::vector<EdgeIx>&& rg, std::vector<EdgeWeight>&& wgt, NodeIx nNodes, EdgeIx nEdges) :
+//            edges(std::move(ed)), ranges(std::move(rg)), weights(std::move(wgt)), map(2*nEdges, 0), numNodes{nNodes}, numEdges{nEdges} {
+//    }
 
 //    void populateEdgeLookup() {
 //        NodeIx nix = 0;
@@ -135,7 +136,7 @@ inline Graph DynamicGraph::finalize() const {
     if(edges.empty()) return {};
     std::vector<Edge> fullEdges(2 * numEdges);
     std::vector<EdgeIx> rg(numNodes + 1);
-//    std::vector<EdgeIx> map(2 * numEdges);
+    std::vector<EdgeIx> map(2 * numEdges);
 
     EdgeIx eix = 0;
     for(const auto& [fx, tx]: edges) {
@@ -161,13 +162,13 @@ inline Graph DynamicGraph::finalize() const {
     std::vector<EdgeIx> tmp(rg);
     for(eix = 0; eix < 2 * numEdges; eix++) {
         Edge e = fullEdges.at(eix);
-//        EdgeIx pix = tmp.at(e.tx)++;
-//        map.at(eix) = pix;
-//        map.at(pix) = eix;
+        EdgeIx pix = tmp.at(e.tx)++;
+        map.at(eix) = pix;
+        map.at(pix) = eix;
         eg.at(eix) = e.tx;
     }
 
-    return {std::move(eg), std::move(rg), numNodes, numEdges};
+    return {std::move(eg), std::move(rg), std::move(map), numNodes, numEdges};
 }
 
 #endif //RCUT_GRAPH_H

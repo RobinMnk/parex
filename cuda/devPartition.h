@@ -7,7 +7,7 @@
 
 #include "types.h"
 #include <thrust/device_vector.h>
-#include <thrust/binary_search.h>
+#include "assert.h"
 
 struct InitFunctor {
     const NodeIx* ranges;
@@ -32,19 +32,22 @@ struct InitFunctor {
 struct ActiveEdgeLogic {
     const NodeData* nodes;
     const NodeIx* neighbors;
-    const EdgeIx* rowOffsets;
+    const EdgeIx* edgeMap;
     NodeIx numNodes;
 
     __device__
     int operator()(EdgeIx edgeIdx) const {
-        NodeIx srcIdx = thrust::upper_bound(thrust::seq, rowOffsets, rowOffsets + numNodes, edgeIdx) - rowOffsets - 1;
+        EdgeIx revEdge = edgeMap[edgeIdx];
+        NodeIx srcNode = neighbors[revEdge];
+        NodeIx srcLabel = nodes[srcNode].label;
 
-        NodeIx srcLabel = nodes[srcIdx].label;
+        assert(edgeMap[revEdge] == edgeIdx);
+        assert(nodes[srcNode].nix == srcNode);
+
         NodeIx tgtNode = neighbors[edgeIdx];
         NodeIx tgtLabel = __ldg(&nodes[tgtNode].label);
 
-        // TODO: the map in the graph gives the edge in the other direction -> this can remove the binary search!
-        // srcLabel = neighbors[map[edgeIdx]];
+        assert(nodes[tgtNode].nix == tgtNode);
 
         return (srcLabel == tgtLabel) ? 1 : 0;
     }
@@ -90,12 +93,13 @@ public:
         thrust::transform(ranges.begin() + 1, ranges.end(), ranges.begin(), activeDegrees.begin(), thrust::minus<int>());
 
 
-        NodeIx* rangesPtr = thrust::raw_pointer_cast(gm.getRanges().data());
-        NodeIx* neighbors = thrust::raw_pointer_cast(gm.getNeighbors().data());
+        const EdgeIx* edgeMapPtr = thrust::raw_pointer_cast(gm.getEdgeMap().data());
+        const EdgeIx* rangesPtr = thrust::raw_pointer_cast(gm.getRanges().data());
+        const NodeIx* neighbors = thrust::raw_pointer_cast(gm.getNeighbors().data());
 
         auto input_iter = thrust::make_transform_iterator(
                 thrust::make_counting_iterator(0),
-                ActiveEdgeLogic{partition.Current(), neighbors, rangesPtr, gm.n}
+                ActiveEdgeLogic{partition.Current(), neighbors, edgeMapPtr, gm.n}
         );
 
         cub::DeviceSegmentedReduce::Sum(
@@ -109,6 +113,28 @@ public:
         );
 
         cudaMalloc(&d_temp_storage, temp_storage_bytes);
+    }
+
+    std::vector<int> getActiveEdgeMap(GraphManager& gm) {
+        std::vector<int> aem(2*gm.m);
+
+        thrust::device_vector<int> d_aem(2*gm.m);
+
+        const EdgeIx* edgeMapPtr = thrust::raw_pointer_cast(gm.getEdgeMap().data());
+        const NodeIx* neighbors = thrust::raw_pointer_cast(gm.getNeighbors().data());
+
+        auto input_iter = thrust::make_counting_iterator(0);
+
+        thrust::transform(
+            input_iter,
+            input_iter + numNodes,
+            d_aem.begin(),
+            ActiveEdgeLogic{partition.Current(), neighbors, edgeMapPtr, gm.n}
+        );
+
+        thrust::copy(d_aem.begin(), d_aem.end(), aem.begin());
+
+        return aem;
     }
 
     void cutClusters(thrust::device_vector<SweepCutData>& sweepCuts, NodeIx numNewClusters) {
@@ -134,12 +160,13 @@ public:
      * requires invariant partition[i].nix == i
      */
     void computeActiveDegrees(GraphManager& gm) {
-        NodeIx* ranges = thrust::raw_pointer_cast(gm.getRanges().data());
-        NodeIx* neighbors = thrust::raw_pointer_cast(gm.getNeighbors().data());
+        const EdgeIx* edgeMapPtr = thrust::raw_pointer_cast(gm.getEdgeMap().data());
+        const EdgeIx* rangesPtr = thrust::raw_pointer_cast(gm.getRanges().data());
+        const NodeIx* neighborsPtr = thrust::raw_pointer_cast(gm.getNeighbors().data());
 
         auto input_iter = thrust::make_transform_iterator(
                 thrust::make_counting_iterator(0),
-                ActiveEdgeLogic{partition.Current(), neighbors, ranges, gm.n}
+                ActiveEdgeLogic{partition.Current(), neighborsPtr, edgeMapPtr, gm.n}
         );
 
         cub::DeviceSegmentedReduce::Sum(
@@ -148,8 +175,8 @@ public:
             input_iter,
             thrust::raw_pointer_cast(activeDegrees.data()),
             static_cast<int>(numNodes),
-            ranges,
-            ranges + 1,
+            rangesPtr,
+            rangesPtr + 1,
             nullptr
         );
     }

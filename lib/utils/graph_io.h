@@ -34,16 +34,16 @@ Graph readGraph(const std::string& filename) {
     infile.close();
     ranges.at(++nix) = eix;
 
-//    std::vector<EdgeIx> map(2 * numEdges);
+    std::vector<EdgeIx> map(2 * numEdges);
     std::vector<EdgeIx> tmp(ranges);
     for(eix = 0; eix < 2 * numEdges; eix++) {
         tx = edges.at(eix);
         EdgeIx pix = tmp.at(tx)++;
-//        map.at(eix) = pix;
-//        map.at(pix) = eix;
+        map.at(eix) = pix;
+        map.at(pix) = eix;
     }
 
-    return {std::move(edges), std::move(ranges), numNodes, numEdges};
+    return {std::move(edges), std::move(ranges),std::move(map), numNodes, numEdges};
 }
 
 DynamicGraph readDynGraph(const std::string& filename) {

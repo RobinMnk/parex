@@ -84,8 +84,9 @@
 
 class GraphManager {
     // Graph
-    thrust::device_vector<NodeIx> neighbors;
-    thrust::device_vector<NodeIx> ranges;
+    const thrust::device_vector<NodeIx> neighbors;
+    const thrust::device_vector<EdgeIx> edgeMap;
+    const thrust::device_vector<EdgeIx> ranges;
 
     // Update buffers
 //    thrust::device_vector<EdgeIx> edgeDeletionBuffer;
@@ -100,10 +101,11 @@ public:
     NodeIx numClusters{1};
 
     explicit GraphManager(const Graph& graph) :
-        n(graph.numNodes),
-        m(graph.numEdges),
         neighbors(graph.edges),
-        ranges(graph.ranges)
+        edgeMap(graph.map),
+        ranges(graph.ranges),
+        n(graph.numNodes),
+        m(graph.numEdges)
 //        edgeDeletionBuffer(2 * graph.numEdges),
 //        nodeUpdateBuffer(graph.numNodes)
     {
@@ -124,12 +126,16 @@ public:
 //        return labels;
 //    }
 
-    thrust::device_vector<NodeIx>& getRanges() {
+    const thrust::device_vector<EdgeIx>& getRanges() const {
         return ranges;
     }
 
-    thrust::device_vector<NodeIx>& getNeighbors() {
+    const thrust::device_vector<NodeIx>& getNeighbors() const {
         return neighbors;
+    }
+
+    const thrust::device_vector<EdgeIx>& getEdgeMap() const {
+        return edgeMap;
     }
 
 //    thrust::device_vector<EdgeIx>& getActiveDegrees() {
@@ -150,6 +156,7 @@ public:
         Graph g(n, m);
         thrust::copy(neighbors.begin(), neighbors.end(), g.edges.begin());
         thrust::copy(ranges.begin(), ranges.end(), g.ranges.begin());
+        thrust::copy(edgeMap.begin(), edgeMap.end(), g.map.begin());
         return g;
     }
 

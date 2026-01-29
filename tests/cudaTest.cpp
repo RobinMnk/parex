@@ -64,8 +64,8 @@ TEST_P(CudaTest, RandomWalk) {
 INSTANTIATE_TEST_SUITE_P(
     Iterations,
     CudaTest,
-//    testing::Values(2)
-    testing::Values(0, 1, 2, 4, 8) // , 16, 64, 128, 256)
+    testing::Values(6)
+    // testing::Values(0, 1, 2, 4, 8) // , 16, 64, 128, 256)
 );
 
 
@@ -196,7 +196,7 @@ TEST_F(CudaTest, CutTest) {
     Timer t;
 
     t.start();
-    // TODO: this only cuts cluster 0
+    // this only cuts cluster 0
     SweepCut sweepCut = part.sweepCut(0, z);
     std::vector<NodeIx> modified{0};
     part.split<false, false>(0, sweepCut.offset, modified);
@@ -237,7 +237,7 @@ TEST_P(CudaTest, RepeatedCuts) {
     for(int i = 0; i < GetParam(); i++) {
         auto deg = cuda.downloadDegrees();
         for(NodeIx nix = 0; nix < graph.numNodes; nix++) {
-            ASSERT_EQ(part.vertexFor(nix).internalDegree, deg[nix]) << " nix = " << nix;
+            EXPECT_EQ(part.vertexFor(nix).internalDegree, deg[nix]) << " nix = " << nix << "\t Iteration: " << (i+1);
         }
 
         rw.iterate(part, active);
@@ -250,28 +250,50 @@ TEST_P(CudaTest, RepeatedCuts) {
             ASSERT_NEAR(y[nix], z[nix], 0.00001);
         }
 
+        cuda.computeSweepCuts();
+        cuda.cutClusters();
+        auto gpuSweepCuts = cuda.readSweepCuts();
+
+        std::vector<NodeData> pt = cuda.downloadPartition();
+        // std::vector<int> aem = cuda.downloadActiveEdgeMap();
+
         NodeIx numClusters = active.size();
         for(NodeIx clusterId = 0; clusterId < numClusters; clusterId++) {
             SweepCut sweepCut = part.sweepCut(clusterId, z);
             part.split<false, false>(clusterId, sweepCut.offset, active);
+
+            // check equal sparsity cuts
+            for (int j = 0; j < gpuSweepCuts.clusterIds.size(); j++) {
+                if (gpuSweepCuts.clusterIds[j] == clusterId) {
+                    EXPECT_NEAR(gpuSweepCuts.cuts[j].sparsity, sweepCut.sparsity, 0.00000001);
+                }
+            }
         }
 
         std::vector<NodeIx> expectedLabels = getLabels(graph, part);
 
-        cuda.computeSweepCuts();
-        cuda.cutClusters();
-
-        std::vector<NodeData> pt = cuda.downloadPartition();
-
-        std::cout << "CPU Partition:" << std::endl;
-        for(NodeIx clusterId = 0; clusterId < part.numClusters(); clusterId++) {
-            auto& cl = part.getCluster(clusterId);
-            std::cout << "\t" << clusterId << ": " << cl.size() << " [" << cl.volume << "]" << std::endl;
-        }
-
+        // checks
         for (NodeIx nix = 0; nix < graph.numNodes; nix++) {
-            EXPECT_EQ(pt[nix].label, expectedLabels[nix]) << " nix: " << nix;
+            ASSERT_EQ(pt[nix].nix, nix);
+            EXPECT_EQ(pt[nix].label, expectedLabels[nix]) << " nix: " << nix << "\t Iteration: " << (i+1);
         }
+
+        // for (NodeIx nix = 0; nix < graph.numNodes; nix++) {
+        //     NodeIx ownLabel = pt[nix].label;
+        //     for(auto it = graph.nbegin(nix); it != graph.nend(nix); ++it) {
+        //         NodeIx nb = *it;
+        //         NodeIx nbLabel = pt[nb].label;
+        //         int edgeActive = (nbLabel == ownLabel) ? 1 : 0;
+        //         EdgeIx eix = std::distance(graph.edges.begin(), it);
+        //         if (eix == 2) {
+        //             const auto& neighbors = graph.edges;
+        //             printf("CPU: %d (%d) <-> %d (%d)\n", nix, ownLabel, nb, nbLabel);
+        //             printf("CPU-neighbors: %d %d %d %d %d %d %d\n", neighbors[0], neighbors[1], neighbors[2], neighbors[3], neighbors[4], neighbors[5], neighbors[6]);
+        //         }
+        //
+        //         ASSERT_EQ(aem[eix], edgeActive) << " eix = " << eix << "\n labels: " << ownLabel << " <-> " << nbLabel;
+        //     }
+        // }
     }
 }
 
