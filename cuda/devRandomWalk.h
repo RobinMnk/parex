@@ -106,8 +106,13 @@ struct ClusterData {
 };
 
 struct ClusterDataExtractorRW {
-    __host__ __device__
-    inline ClusterData operator()(frac_t rwValue) const {
+    __device__
+    inline ClusterData operator()(uint64_t packedKey) const {
+        uint32_t ordered = static_cast<uint32_t>(packedKey & 0xFFFFFFFF);
+        uint32_t mask = (ordered & 0x80000000) ? 0x80000000 : 0xffffffff;
+        uint32_t i = ordered ^ mask;
+
+        float rwValue = __uint_as_float(i);
         return {rwValue, rwValue, rwValue, 1};
     }
 };
@@ -151,7 +156,19 @@ public:
         return clusterSums;
     }
 
-    int computeClusterData(cub::DoubleBuffer<NodeData>& partition, thrust::device_vector<int>& uniqueLabels) {
+    int computeClusterData(cub::DoubleBuffer<NodeData>& partition, cub::DoubleBuffer<uint64_t>& packedKeys, thrust::device_vector<int>& uniqueLabels) {
+
+        std::vector<NodeData> pt(numNodes);
+        thrust::device_ptr<NodeData> dev_ptr(partition.Current());
+        thrust::copy(dev_ptr, dev_ptr + numNodes, pt.begin());
+        std::vector<frac_t> rw(numNodes);
+        thrust::copy(dist.begin(), dist.begin() + numNodes, rw.begin());
+
+        for (NodeIx nix = 0; nix < numNodes; nix++) {
+            printf("Node %d with label %d with rw=%f\n", pt[nix].nix, pt[nix].label, rw[pt[nix].nix]);
+        }
+
+
         NodeData* partitionPtr = partition.Current();
         auto label_iter = thrust::make_transform_iterator(partitionPtr, LabelExtractorRW());
 
@@ -160,7 +177,7 @@ public:
             thrust::device,
             label_iter,
             label_iter + numNodes,
-            thrust::make_transform_iterator(dist.begin(), ClusterDataExtractorRW()),
+            thrust::make_transform_iterator(packedKeys.Current(), ClusterDataExtractorRW()),
             uniqueLabels.begin(),
             clusterSums.begin(),
             thrust::equal_to<int>(),
@@ -172,11 +189,30 @@ public:
     }
 
 
-    void recenterAndDeactivateClusters(cub::DoubleBuffer<NodeData>& partition, thrust::device_vector<int>& uniqueLabels) {
-        int numUnique = computeClusterData(partition, uniqueLabels);
+    void print(int numUnique, thrust::device_vector<int>& uniqueLabels) {
+        std::vector<ClusterData> cst(numUnique);
+        thrust::copy(clusterSums.begin(), clusterSums.begin() + numUnique, cst.begin());
+        std::vector<int> lbl(numUnique);
+        thrust::copy(uniqueLabels.begin(), uniqueLabels.begin() + numUnique, lbl.begin());
+        for (int i = 0; i < numUnique; i++) {
+            const float clusterPotential = cst[i].maxPotential - cst[i].minPotential;
+            const float average = cst[i].rwSum / static_cast<float>(cst[i].totalElements);
+            printf("%d:  Cluster %d [average = %f, potential = %f, numElements = %d]\n", i, lbl[i], average, clusterPotential, cst[i].totalElements);
+        }
+        fflush(stdout);
+    }
 
-        // std::vector<ClusterData> cst(clusterSums.size());
-        // thrust::copy(clusterSums.begin(), clusterSums.begin() + numUnique, cst.begin());
+    void recenterAndDeactivateClusters(cub::DoubleBuffer<NodeData>& partition, cub::DoubleBuffer<uint64_t>& packedKeys, thrust::device_vector<int>& uniqueLabels) {
+        int numUnique = computeClusterData(partition, packedKeys, uniqueLabels);
+
+        thrust::sort_by_key(
+            uniqueLabels.begin(),
+            uniqueLabels.begin() + numUnique,
+            clusterSums.begin()
+        );
+        cudaDeviceSynchronize();
+
+        print(numUnique, uniqueLabels);
 
 
         // subtract average from each (active) node
@@ -205,6 +241,10 @@ public:
                 );
                 int correspondingSweepCutIndex = static_cast<int>(it - uniqueLabelsPtr);
 
+                if (uniqueLabelsPtr[correspondingSweepCutIndex] != label) {
+                    printf("ERROR: label mismatch!! For nix = %d:\t%d != %d\n", data.nix, label, uniqueLabelsPtr[correspondingSweepCutIndex]);
+                }
+
                 const ClusterData cd = clusterDataPtr[correspondingSweepCutIndex];
 
                 if (cd.totalElements < 2) {
@@ -225,10 +265,16 @@ public:
                     distPtr[data.nix] -= average; // TODO: write this diff to any unused field within NodeData! (save random write)
                 // }
 
-                printf("node %d with label %d, old rwValue = %f and offset = %d loaded this cluster data: [average = %f, potential = %f, numElements = %d]\n", data.nix, label, rw, data.offsetInCluster, average, cd.maxPotential - cd.minPotential, cd.totalElements);
+                printf("node %d with label %d, old rwValue = %f and offset = %d loaded this cluster data (%d): [average = %f, potential = %f, numElements = %d]\n", data.nix, label, rw, data.offsetInCluster, correspondingSweepCutIndex, average, cd.maxPotential - cd.minPotential, cd.totalElements);
 
             }
         );
+
+
+        printf("After\n");
+        computeClusterData(partition, packedKeys, uniqueLabels);
+        print(numUnique, uniqueLabels);
+        printf("\n");
     }
 
 

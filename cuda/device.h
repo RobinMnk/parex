@@ -47,7 +47,7 @@ struct CudaDeviceManager::Impl {
     void cutClusters() {
         pt->cutClusters(sc->getSweepCuts(), sc->getLabels(), sc->getNumActiveClusters());
 
-        rw->recenterAndDeactivateClusters(pt->getPartitionView(), sc->getLabels());
+        rw->recenterAndDeactivateClusters(pt->getPartitionView(), sc->getKeyBuffer(), sc->getLabels());
 
         // absolutely crucial!!
         fixupPartition();
@@ -157,7 +157,7 @@ void CudaDeviceManager::Impl::printInf(
     for (int y = 0; y < sc->getNumActiveClusters(); y++) std::cout << labels[y] << ", ";
     std::cout << std::endl;
 
-    rw->computeClusterData(pt->getPartitionView(), sc->getLabels());
+    rw->computeClusterData(pt->getPartitionView(), sc->getKeyBuffer(), sc->getLabels());
     auto& y = rw->getClusterData();
     thrust::copy(y.begin(), y.begin() + sc->getNumActiveClusters(), clusters.begin());
 
