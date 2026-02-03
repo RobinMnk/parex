@@ -26,7 +26,10 @@ using EdgeWeight    = unsigned int;
 using frac_t        = float;
 
 constexpr int threads = 256;
+constexpr unsigned int seed{6};
 
+constexpr frac_t rw_stay = 0.1;
+constexpr frac_t rw_threshold = 1e-4;
 constexpr float sc_threshold = 0.3;
 
 struct SweepCutData {
@@ -37,7 +40,7 @@ struct SweepCutData {
 
 struct NodeData {
     NodeIx nix;
-    int label;  // a negative label represent inactive cluster
+    int label;  // a negative label represents inactive cluster
     EdgeIx degree;
     NodeIx rangeStart;
 

@@ -72,6 +72,8 @@ void nodeDiffKernel_Sparse(
 
     assert(data.nix == i && "nix mismatch!");
 
+    // if (data.label < 0) return;
+
     const frac_t myVal = __ldg(&values[i]);
 
     int nodeContribution = 0;
@@ -139,6 +141,7 @@ class SweepCutManager {
 public:
     explicit SweepCutManager(NodeIx n, PartitionManager& pm) :
         numNodes(n),
+        numActiveClusters(1),
         packedKeysIn(n),
         packedKeysOut(n),
         packedKeys(thrust::raw_pointer_cast(packedKeysIn.data()),
@@ -157,7 +160,7 @@ public:
         return numActiveClusters;
     }
 
-    auto& getLabels() const {
+    auto& getLabels() {
         return d_unique_labels;
     }
 
@@ -167,7 +170,8 @@ public:
         const thrust::device_vector<frac_t> &values
     );
 
-    AllSweepCuts resultToCPU(NodeIx numClusters) {
+    AllSweepCuts resultToCPU() {
+        NodeIx numClusters = numActiveClusters;
         std::vector<int> clusterIds(numClusters);
         std::vector<SweepCutData> cuts(numClusters);
         thrust::copy(d_unique_labels.begin(), d_unique_labels.begin() + numClusters, clusterIds.begin());
@@ -183,8 +187,9 @@ public:
 
 struct LabelExtractor {
     __host__ __device__
-    inline NodeIx operator()(uint64_t k) const {
-        return static_cast<NodeIx>(k >> 32);
+    inline int operator()(uint64_t k) const {
+        uint32_t orderedLabel = static_cast<uint32_t>(k >> 32);
+        return static_cast<int>(orderedLabel ^ 0x80000000);
     }
 };
 
@@ -307,6 +312,8 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
 
     EdgeIx* clusterVolumesPtr = thrust::raw_pointer_cast(pm.getVolumes().data());
 
+    // sweep cuts output very last possible cut -> I suspect the volumes are off
+
     // find best sweep cut for each cluster
     auto end_pair = thrust::reduce_by_key(
         thrust::device,
@@ -324,6 +331,18 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
     );
 
     numActiveClusters = static_cast<int>(thrust::distance(sweepCuts.begin(), end_pair.second));
+
+
+    std::vector<SweepCutData> scs(numActiveClusters);
+    thrust::copy(sweepCuts.begin(), sweepCuts.begin() + numActiveClusters, scs.begin());
+
+    printf("Computed these sweep cuts:\n");
+    for (auto sc : scs) {
+        printf("Cluster: %d, sparsity = %f, offset = %d\n", sc.clusterId, sc.sparsity, sc.offset);
+    }
+    fflush(stdout);
+
+
 }
 
 

@@ -7,6 +7,7 @@
 
 #include "types.h"
 #include <thrust/device_vector.h>
+#include <thrust/binary_search.h>
 #include "assert.h"
 
 struct InitFunctor {
@@ -137,18 +138,55 @@ public:
         return aem;
     }
 
-    void cutClusters(thrust::device_vector<SweepCutData>& sweepCuts, int numNewClusters) {
+    void cutClusters(thrust::device_vector<SweepCutData>& sweepCuts, const thrust::device_vector<int>& uniqueLabels, int numNewClusters) {
         SweepCutData* sweepCutPtr = thrust::raw_pointer_cast(sweepCuts.data());
+        const int* uniqueLabelsPtr = thrust::raw_pointer_cast(uniqueLabels.data());
 
         thrust::for_each_n(
             thrust::device,
             partition.Current(),
             numNodes,
-            [sweepCutPtr, numNewClusters] __device__ (NodeData& data) {
+            [sweepCutPtr, uniqueLabelsPtr, numNewClusters] __device__ (NodeData& data) {
                 const int clusterId = data.label;
                 if (clusterId < 0) return; // this cluster is inactive
-                SweepCutData sc = sweepCutPtr[clusterId];
+
+                // TODO: This makes no sense!! The clusterId is not the same as the index!!!
+
+                const int* it = thrust::lower_bound(
+                    thrust::seq,
+                    uniqueLabelsPtr,
+                    uniqueLabelsPtr + numNewClusters,
+                    clusterId
+                );
+
+                int correspondingSweepCutIndex = static_cast<int>(it - uniqueLabelsPtr);
+
+
+                const int *alt = nullptr;
+                for (const int* x = uniqueLabelsPtr; x < uniqueLabelsPtr + numNewClusters; x++) {
+                    if (*x == clusterId) {
+                        alt = x;
+                    }
+                }
+                if (alt != it) {
+                    printf("binary search failed!\n");
+                }
+
+
+                if (clusterId != uniqueLabelsPtr[correspondingSweepCutIndex]) {
+                    printf("ERRORRR!!!! clusterId does not match unique label! (clusterId = %d != %d = index\n", clusterId, correspondingSweepCutIndex);
+                }
+
+
+                SweepCutData sc = sweepCutPtr[correspondingSweepCutIndex];
+
+                if (clusterId != sc.clusterId) {
+                    printf("ERRORRR!!!! clusterId does not match sweep cut!\n%d is the clusterId, this is the scId: %d\n", clusterId, sc.clusterId);
+                }
+
                 if(sc.sparsity < sc_threshold && data.offsetInCluster > sc.offset) {
+                    // printf("Cluster %d has sparsity %f < %f \t -> cutting at offset = %d\n", sc.clusterId, sc.sparsity, sc_threshold, sc.offset);
+
                     data.label += numNewClusters;
                 }
             }

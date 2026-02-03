@@ -9,7 +9,7 @@
 #include <valarray>
 #include <random>
 
-const frac_t rw_stay = 0.1;
+// const frac_t rw_stay = 0.1;
 std::mt19937 random_source{1};
 
 class RandomWalk {
@@ -56,6 +56,7 @@ void RandomWalk::iterate(const Partition& part, const std::vector<NodeIx>& activ
     for(NodeIx clusterId: active) {
         const Cluster& cluster = part.getCluster(clusterId);
         for(const ClusterVertex& cv: cluster) {
+            if (cv.internalDegree == 0) continue;
             val = m_old_distribution[cv.nix] / static_cast<frac_t>(cv.internalDegree);
             for (auto it = cluster.edgeBegin(cv); it != cluster.edgeEnd(cv); ++it) {
                 NodeIx nb = *it;

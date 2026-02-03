@@ -14,13 +14,10 @@
 
 #include <cub/cub.cuh>
 #include <cassert>
+#include <thrust/detail/binary_search.inl>
 
 #include "devGraph.h"
 
-
-constexpr unsigned int seed{6};
-constexpr frac_t rw_stay = 0.1;
-constexpr frac_t rw_threshold = 1e-4;
 
 struct NormalDistributionFunctor {
     unsigned int base_seed;
@@ -39,14 +36,16 @@ struct NormalDistributionFunctor {
 
 
 __device__
-inline uint64_t packKey(NodeIx label, float v) {
+inline uint64_t packKey(int label, float v) {
     uint32_t i = __float_as_uint(v);
 
     uint32_t mask = (i & 0x80000000) ? 0xffffffff : 0x80000000;
     uint32_t ordered = i ^ mask;
 
+    uint32_t orderedLabel = static_cast<uint32_t>(label) ^ 0x80000000;
+
     // Shift label to high bits, place ordered float in low bits
-    return (static_cast<uint64_t>(label) << 32) | ordered;
+    return (static_cast<uint64_t>(orderedLabel) << 32) | ordered;
 }
 
 __global__
@@ -77,7 +76,6 @@ void lazyRandomWalkKernel(
         const EdgeIx nbDeg = __ldg(&activeDegrees[neighbor]);
 
         if(nbData.label == data.label && nbDeg != 0) {
-            // inactive nodes have deg == 0
             incoming_sum += (__ldg(&old_dist[neighbor]) / static_cast<frac_t>(nbDeg));
         }
     }
@@ -95,7 +93,7 @@ void lazyRandomWalkKernel(
 
 struct LabelExtractorRW {
     __host__ __device__
-    inline NodeIx operator()(const NodeData& data) const {
+    inline int operator()(const NodeData& data) const {
         return data.label;
     }
 };
@@ -149,26 +147,41 @@ public:
         if (d_temp_storage) cudaFree(d_temp_storage);
     }
 
+    auto& getClusterData() {
+        return clusterSums;
+    }
 
-    void recenterAndDeactivateClusters(cub::DoubleBuffer<NodeData>& partition) {
-
+    int computeClusterData(cub::DoubleBuffer<NodeData>& partition, thrust::device_vector<int>& uniqueLabels) {
         NodeData* partitionPtr = partition.Current();
         auto label_iter = thrust::make_transform_iterator(partitionPtr, LabelExtractorRW());
 
         // find ClusterData for each cluster (to compute potential and average of each)
-        thrust::reduce_by_key(
+        auto end_iters = thrust::reduce_by_key(
             thrust::device,
             label_iter,
             label_iter + numNodes,
             thrust::make_transform_iterator(dist.begin(), ClusterDataExtractorRW()),
-            thrust::make_discard_iterator(),
+            uniqueLabels.begin(),
             clusterSums.begin(),
             thrust::equal_to<int>(),
             ClusterDataReduceOp()
         );
 
+        int numUnique = end_iters.second - clusterSums.begin();
+        return numUnique;
+    }
+
+
+    void recenterAndDeactivateClusters(cub::DoubleBuffer<NodeData>& partition, thrust::device_vector<int>& uniqueLabels) {
+        int numUnique = computeClusterData(partition, uniqueLabels);
+
+        // std::vector<ClusterData> cst(clusterSums.size());
+        // thrust::copy(clusterSums.begin(), clusterSums.begin() + numUnique, cst.begin());
+
+
         // subtract average from each (active) node
         const ClusterData* clusterDataPtr = thrust::raw_pointer_cast(clusterSums.data());
+        const int* uniqueLabelsPtr = thrust::raw_pointer_cast(uniqueLabels.data());
 
         frac_t* distPtr = thrust::raw_pointer_cast(dist.data());
 
@@ -176,21 +189,44 @@ public:
             thrust::device,
             partition.Current(),
             numNodes,
-            [clusterDataPtr, distPtr] __device__ (NodeData& data) {
+            [clusterDataPtr, uniqueLabelsPtr, distPtr, numUnique] __device__ (NodeData& data) {
                 const int label = data.label;
 
-                if (data.label < 0) return; // cluster already inactive
+                if (data.label < 0) {
+                    printf("node %d with label %d returns because label is negative\n", data.nix, label);
+                    return;
+                }; // cluster already inactive
 
-                const ClusterData cd = clusterDataPtr[label];
-                const float clusterPotential = cd.maxPotential - cd.minPotential;
+                const int* it = thrust::lower_bound(
+                    thrust::seq,
+                    uniqueLabelsPtr,
+                    uniqueLabelsPtr + numUnique,
+                    label
+                );
+                int correspondingSweepCutIndex = static_cast<int>(it - uniqueLabelsPtr);
 
-                if (clusterPotential < rw_threshold) {
-                    // this cluster should be deactivated
-                    data.label = -label - 1;
-                } else {
+                const ClusterData cd = clusterDataPtr[correspondingSweepCutIndex];
+
+                if (cd.totalElements < 2) {
+                    printf("node %d with label %d returns because numElements = %d. Note that totalClusters = %d\n", data.nix, label, cd.totalElements, numUnique);
+                    return;
+                };
+
+            const float rw = distPtr[data.nix];
+
+                // const float clusterPotential = cd.maxPotential - cd.minPotential;
+
+                // if (clusterPotential < rw_threshold) {
+                //     // this cluster should be deactivated
+                //     // printf("Deactivating cluster: %d -> %d\n", label, -label-1);
+                //     data.label = -label - 1;
+                // } else {
                     const float average = cd.rwSum / static_cast<float>(cd.totalElements);
                     distPtr[data.nix] -= average; // TODO: write this diff to any unused field within NodeData! (save random write)
-                }
+                // }
+
+                printf("node %d with label %d, old rwValue = %f and offset = %d loaded this cluster data: [average = %f, potential = %f, numElements = %d]\n", data.nix, label, rw, data.offsetInCluster, average, cd.maxPotential - cd.minPotential, cd.totalElements);
+
             }
         );
     }

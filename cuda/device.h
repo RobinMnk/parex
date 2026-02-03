@@ -45,9 +45,9 @@ struct CudaDeviceManager::Impl {
     }
 
     void cutClusters() {
-        pt->cutClusters(sc->getSweepCuts(), sc->getNumActiveClusters());
+        pt->cutClusters(sc->getSweepCuts(), sc->getLabels(), sc->getNumActiveClusters());
 
-        rw->recenterAndDeactivateClusters(pt->getPartitionView());
+        rw->recenterAndDeactivateClusters(pt->getPartitionView(), sc->getLabels());
 
         // absolutely crucial!!
         fixupPartition();
@@ -62,7 +62,7 @@ struct CudaDeviceManager::Impl {
     }
 
     AllSweepCuts getSweepCuts() {
-        return sc->resultToCPU(gm->numClusters);
+        return sc->resultToCPU();
     }
 
     std::vector<NodeData> downloadPartition() {
@@ -80,21 +80,154 @@ struct CudaDeviceManager::Impl {
     Graph downloadGraph() {
         return gm->downloadGraph();
     }
+
+    void printInf(
+        std::vector<int>& labels,
+        std::vector<ClusterData>& clusters,
+        std::vector<EdgeIx>& degs,
+        std::vector<SweepCutData>& scs,
+        std::vector<NodeData>& nodes
+    );
 };
+
+
+void printNodes(std::vector<NodeData>& nodes, NodeIx n, NodeData* ptr) {
+    thrust::device_ptr<NodeData> dev_ptr2(ptr);
+    thrust::copy(dev_ptr2, dev_ptr2 + n, nodes.begin());
+
+    for (auto j = 0; j < n; j++) {
+        std::cout << "(" << nodes[j].nix << ", " << nodes[j].label  << "), ";
+    }
+    std::cout << std::endl;
+}
+
+
+
+// void CudaDeviceManager::Impl::expanderDecomposition() {
+//     std::vector<int> labels(gm->n);
+//     // std::vector<ClusterData> clusters(gm->n);
+//     // std::vector<EdgeIx> degs(gm->n);
+//     // std::vector<SweepCutData> scs(gm->n);
+//     std::vector<NodeData> nodes(gm->n);
+//
+//     int numClusters = sc->getNumActiveClusters();
+//
+//     while (labels[numClusters-1] >= 0) {
+//
+//         // printf("====================================================================================\n");
+//
+//         auto& x = sc->getLabels();
+//         thrust::copy(x.begin(), x.end(), labels.begin());
+//         for (int y = 0; y < sc->getNumActiveClusters(); y++) std::cout << labels[y] << ", ";
+//         std::cout << std::endl;
+//
+//
+//         iterateRandomWalk();
+//         computeSweepCuts();
+//
+//         // printf("Cutting clusters\n");
+//         pt->cutClusters(sc->getSweepCuts(), sc->getLabels(), sc->getNumActiveClusters());
+//
+//         // printf("Recenter and Deactivate\n");
+//         rw->recenterAndDeactivateClusters(pt->getPartitionView());
+//
+//         // absolutely crucial!!
+//         fixupPartition();
+//
+//         pt->computeActiveDegrees(*gm);
+//
+//         numClusters = sc->getNumActiveClusters();
+//     }
+//
+//     printf("====================================================================================\n");
+//
+//     printNodes(nodes, gm->n, pt->getPartitionView().Current());
+// }
+
+
+void CudaDeviceManager::Impl::printInf(
+    std::vector<int>& labels,
+    std::vector<ClusterData>& clusters,
+    std::vector<EdgeIx>& degs,
+    std::vector<SweepCutData>& scs,
+    std::vector<NodeData>& nodes
+) {
+    auto& x = sc->getLabels();
+    thrust::copy(x.begin(), x.end(), labels.begin());
+    for (int y = 0; y < sc->getNumActiveClusters(); y++) std::cout << labels[y] << ", ";
+    std::cout << std::endl;
+
+    rw->computeClusterData(pt->getPartitionView(), sc->getLabels());
+    auto& y = rw->getClusterData();
+    thrust::copy(y.begin(), y.begin() + sc->getNumActiveClusters(), clusters.begin());
+
+    auto& u = sc->getSweepCuts();
+    thrust::copy(u.begin(), u.begin() + sc->getNumActiveClusters(), scs.begin());
+
+    auto& z = pt->getActiveDegrees();
+    thrust::copy(z.begin(), z.end(), degs.begin());
+
+    thrust::device_ptr<NodeData> dev_ptr(pt->getPartitionView().Current());
+    thrust::copy(dev_ptr, dev_ptr + gm->n, nodes.begin());
+
+    for (auto i = 0; i < sc->getNumActiveClusters(); i++) {
+        std::cout << "cluster " << labels[i] << ":\n"
+                     "\tpotential: " << clusters[i].maxPotential - clusters[i].minPotential <<
+                         "\n\taverage:   " << clusters[i].rwSum / clusters[i].totalElements <<
+                         "\n\telements:  " << clusters[i].totalElements <<
+                            "\n\tsc-id:     " << scs[i].clusterId <<
+                         "\n\tsc-spars:  " << scs[i].sparsity <<
+                         "\n\tsc-offs:  " << scs[i].offset
+        << std::endl;
+    }
+    std::cout << "\n" << std::endl;
+}
 
 
 void CudaDeviceManager::Impl::expanderDecomposition() {
     std::vector<int> labels(gm->n);
+    std::vector<ClusterData> clusters(gm->n);
+    std::vector<EdgeIx> degs(gm->n);
+    std::vector<SweepCutData> scs(gm->n);
+    std::vector<NodeData> nodes(gm->n);
 
-    while (labels[0] >= 0) {
+    int maxIt = 20;
+
+    while (maxIt-- > 0 && labels[sc->getNumActiveClusters() - 1] >= 0) {
+
+        printf("====================================================================================\n");
+
         iterateRandomWalk();
         computeSweepCuts();
+
+        printf("Before cutting\n");
+        printInf(labels, clusters, degs, scs, nodes);
+
         cutClusters();
 
-        auto& x = sc->getLabels();
-        thrust::copy(x.begin(), x.end(), labels.begin());
-        for (int y = 0; y < sc->getNumActiveClusters(); y++) std::cout << labels[y] << ", ";
-        std::cout << "\n" << std::endl;
+        printf("After cutting\n");
+        printInf(labels, clusters, degs, scs, nodes);
+
+
+
+
+        // for (auto j = 0; j < gm->n; j++) {
+        //     std::cout << "(" << nodes[j].nix << ", " << nodes[j].label  << ", " << nodes[j].activeDegree << "), ";
+        // }
+        //
+
+        // printf("Cutting clusters\n");
+        // pt->cutClusters(sc->getSweepCuts(), sc->getLabels(), sc->getNumActiveClusters());
+        //
+        //
+        // printf("Recenter and Deactivate\n");
+        // rw->recenterAndDeactivateClusters(pt->getPartitionView());
+        //
+        // // absolutely crucial!!
+        // fixupPartition();
+        //
+        // pt->computeActiveDegrees(*gm);
+
     }
 }
 
