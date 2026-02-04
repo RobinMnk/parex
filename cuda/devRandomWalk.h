@@ -139,6 +139,7 @@ class RandomWalkManager {
     NodeIx numNodes;
     void* d_temp_storage = nullptr;
     size_t temp_storage_bytes = 0;
+    int maxLabel{0};
 
 public:
     explicit RandomWalkManager(NodeIx n) : dist(n), old_dist(n), node_val(n), clusterSums(n), numNodes(n) {
@@ -171,7 +172,19 @@ public:
             ClusterDataReduceOp()
         );
 
+
         int numUnique = end_iters.second - clusterSums.begin();
+
+        thrust::sort_by_key(
+            uniqueLabels.begin(),
+            uniqueLabels.begin() + numUnique,
+            clusterSums.begin()
+        );
+
+        thrust::copy_n(uniqueLabels.begin() + numUnique - 1, 1, &maxLabel);
+
+        printf("There are %d clusters and the maximum label is %d\n", numUnique, maxLabel);
+
         return numUnique;
     }
 
@@ -189,19 +202,14 @@ public:
         fflush(stdout);
     }
 
-    void recenterAndDeactivateClusters(cub::DoubleBuffer<NodeData>& partition, thrust::device_vector<int>& uniqueLabels) {
+    int recenterAndDeactivateClusters(cub::DoubleBuffer<NodeData>& partition, thrust::device_vector<int>& uniqueLabels) {
         int numUnique = computeClusterData(partition, uniqueLabels);
 
-        thrust::sort_by_key(
-            uniqueLabels.begin(),
-            uniqueLabels.begin() + numUnique,
-            clusterSums.begin()
-        );
         cudaDeviceSynchronize();
 
 
-        printf("Before:\n");
-        print(numUnique, uniqueLabels);
+        // printf("Before:\n");
+        // print(numUnique, uniqueLabels);
 
 
         // subtract average from each (active) node
@@ -230,6 +238,9 @@ public:
                 );
                 int correspondingSweepCutIndex = static_cast<int>(it - uniqueLabelsPtr);
 
+                // TODO: HERE
+                data.label = correspondingSweepCutIndex;
+
                 if (uniqueLabelsPtr[correspondingSweepCutIndex] != label) {
                     printf("ERROR: label mismatch!! For nix = %d:\t%d != %d\n", data.nix, label, uniqueLabelsPtr[correspondingSweepCutIndex]);
                 }
@@ -250,7 +261,7 @@ public:
                 //     // printf("Deactivating cluster: %d -> %d\n", label, -label-1);
                 //     data.label = -label - 1;
                 // } else {
-                    const float average = cd.rwSum / static_cast<float>(cd.totalElements);
+                    const float average = cd.rwSum / static_cast<double>(cd.totalElements);
                     distPtr[data.nix] -= average; // TODO: write this diff to any unused field within NodeData! (save random write)
                     data.rwValue -= average; // TODO: this line is just for debugging
                 // }
@@ -260,10 +271,12 @@ public:
             }
         );
 
-        printf("After\n");
-        computeClusterData(partition, uniqueLabels);
-        print(numUnique, uniqueLabels);
+        // printf("After\n");
+        // computeClusterData(partition, uniqueLabels);
+        // print(numUnique, uniqueLabels);
         // printf("\n");
+
+        return numUnique;
     }
 
 
@@ -293,6 +306,10 @@ public:
                 thrust::raw_pointer_cast(dist.data()),
                 packedKeys.Current()
         );
+    }
+
+    int getMaxLabel() {
+        return maxLabel;
     }
 
 

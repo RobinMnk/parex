@@ -163,6 +163,10 @@ public:
         return numActiveClusters;
     }
 
+    void setNumActiveClusters(int num) {
+        numActiveClusters = num;
+    }
+
     auto& getLabels() {
         return d_unique_labels;
     }
@@ -252,7 +256,9 @@ struct ReduceOp {
         const EdgeIx denom = (prefixVol < totalVol - prefixVol) ? prefixVol : (totalVol - prefixVol);
         const float sparsity  = (denom > 0) ? (static_cast<float>(edgeDiff) / static_cast<float>(denom)) : 2.0f;
 
-        // printf("Node %d has label %d at offset %d, prefixSum = %d and prefixVol = %d -> sparsity: %f, denom = %d\n", nodeData.nix, nodeData.label, nodeData.offsetInCluster, nodeData.prefixEdgeDiff, nodeData.prefixVolume, sparsity, denom);
+        if (nodeData.label == 316) {
+            printf("Node %d has label %d at offset %d rwValue = %f, prefixSum = %d and prefixVol = %d -> sparsity: %f, denom = %d\n", nodeData.nix, nodeData.label, nodeData.offsetInCluster, nodeData.rwValue, nodeData.prefixEdgeDiff, nodeData.prefixVolume, sparsity, denom);
+        }
 
 
         return { nodeData.label, sparsity , nodeData.offsetInCluster };
@@ -374,15 +380,17 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
 
     numActiveClusters = static_cast<int>(thrust::distance(sweepCuts.begin(), end_pair.second));
 
+    assert(numActiveClusters  == num);
+
 
     std::vector<SweepCutData> scs(numActiveClusters);
     thrust::copy(sweepCuts.begin(), sweepCuts.begin() + numActiveClusters, scs.begin());
 
-    printf("Computed these sweep cuts:\n");
-    for (auto sc : scs) {
-        printf("Cluster: %d, sparsity = %f, offset = %d\n", sc.clusterId, sc.sparsity, sc.offset);
-    }
-    fflush(stdout);
+    // printf("Computed these sweep cuts:\n");
+    // for (auto sc : scs) {
+    //     printf("Cluster: %d, sparsity = %f, offset = %d\n", sc.clusterId, sc.sparsity, sc.offset);
+    // }
+    // fflush(stdout);
 
 
 }

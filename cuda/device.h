@@ -45,9 +45,10 @@ struct CudaDeviceManager::Impl {
     }
 
     void cutClusters() {
-        pt->cutClusters(sc->getSweepCuts(), sc->getLabels(), sc->getNumActiveClusters());
+        pt->cutClusters(sc->getSweepCuts(), sc->getLabels(), sc->getNumActiveClusters(), rw->getMaxLabel());
 
-        rw->recenterAndDeactivateClusters(pt->getPartitionView(), sc->getLabels());
+        int numClusters = rw->recenterAndDeactivateClusters(pt->getPartitionView(), sc->getLabels());
+        sc->setNumActiveClusters(numClusters);
 
         // absolutely crucial!!
         fixupPartition();
@@ -157,7 +158,7 @@ void CudaDeviceManager::Impl::printInf(
     for (int y = 0; y < sc->getNumActiveClusters(); y++) std::cout << labels[y] << ", ";
     std::cout << std::endl;
 
-    rw->computeClusterData(pt->getPartitionView(), sc->getLabels());
+    // rw->computeClusterData(pt->getPartitionView(), sc->getLabels());
     auto& y = rw->getClusterData();
     thrust::copy(y.begin(), y.begin() + sc->getNumActiveClusters(), clusters.begin());
 
@@ -200,12 +201,12 @@ void CudaDeviceManager::Impl::expanderDecomposition() {
         iterateRandomWalk();
         computeSweepCuts();
 
-        printf("Before cutting\n");
-        printInf(labels, clusters, degs, scs, nodes);
+        // printf("Before cutting\n");
+        // printInf(labels, clusters, degs, scs, nodes);
 
         cutClusters();
 
-        printf("After cutting\n");
+        // printf("After cutting\n");
         printInf(labels, clusters, degs, scs, nodes);
 
 

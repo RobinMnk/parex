@@ -335,10 +335,27 @@ TEST_P(CudaTest, RepeatedCuts) {
             ASSERT_NE(it, lookup.end());
             int gpuLabel = it->second;
 
+            if (gpuLabel == 316) {
+
+                int ix = 0;
+                for (NodeIx nix: nodesInCluster) {
+                    EdgeIx edgeDiff = sweepCut.pS[ix].edgeDiff;
+                    EdgeIx vol = sweepCut.pS[ix].vol;
+                    EdgeIx clusterVol = part.getCluster(clusterId).internalVolume;
+
+
+                    EdgeIx denom = (std::min(vol, clusterVol - vol));
+                    frac_t sparsity = static_cast<frac_t>(edgeDiff) / static_cast<frac_t>(denom);
+
+                    // printf("Node %d has label %d at offset ???, rwvalue = %f, prefixSum = %d and prefixVol = %d -> sparsity: %f, denom = %d, clusterVol = %d\n", nix, gpuLabel, z[nix], edgeDiff, vol, sparsity, denom, clusterVol);
+                    ix++;
+                }
+            }
+
             // check equal sparsity cuts
             for (int j = 0; j < gpuSweepCuts.clusterIds.size(); j++) {
                 if (gpuSweepCuts.clusterIds[j] == gpuLabel) {
-                    ASSERT_NEAR(gpuSweepCuts.cuts[j].sparsity, sweepCut.sparsity, 0.00000001);
+                    ASSERT_NEAR(gpuSweepCuts.cuts[j].sparsity, sweepCut.sparsity, 0.00000001) << "GPU label: " << gpuLabel;
                     if (sweepCut.sparsity < 1 && gpuSweepCuts.cuts[j].sparsity < 1) {
                         // EXPECT_EQ(gpuSweepCuts.cuts[j].offset - 1, sweepCut.offset);
                         sweepCut.offset = gpuSweepCuts.cuts[j].offset - 1;
@@ -406,7 +423,6 @@ TEST_P(CudaTest, RepeatedCuts) {
 
 
 TEST_F(CudaTest, ExpanderDecomposition) {
-    GTEST_SKIP();
     cuda.expanderDecomposition();
     std::vector<NodeData> pt = cuda.downloadPartition();
 

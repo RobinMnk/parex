@@ -137,7 +137,7 @@ public:
         return aem;
     }
 
-    void cutClusters(thrust::device_vector<SweepCutData>& sweepCuts, const thrust::device_vector<int>& uniqueLabels, int numNewClusters) {
+    void cutClusters(thrust::device_vector<SweepCutData>& sweepCuts, const thrust::device_vector<int>& uniqueLabels, int numClusters, int maxLabel) {
         SweepCutData* sweepCutPtr = thrust::raw_pointer_cast(sweepCuts.data());
         const int* uniqueLabelsPtr = thrust::raw_pointer_cast(uniqueLabels.data());
 
@@ -145,7 +145,7 @@ public:
             thrust::device,
             partition.Current(),
             numNodes,
-            [sweepCutPtr, uniqueLabelsPtr, numNewClusters] __device__ (NodeData& data) {
+            [sweepCutPtr, uniqueLabelsPtr, numClusters, maxLabel] __device__ (NodeData& data) {
                 const int clusterId = data.label;
                 if (clusterId < 0) return; // this cluster is inactive
 
@@ -154,7 +154,7 @@ public:
                 const int* it = thrust::lower_bound(
                     thrust::seq,
                     uniqueLabelsPtr,
-                    uniqueLabelsPtr + numNewClusters,
+                    uniqueLabelsPtr + numClusters,
                     clusterId
                 );
 
@@ -162,7 +162,7 @@ public:
 
 
                 const int *alt = nullptr;
-                for (const int* x = uniqueLabelsPtr; x < uniqueLabelsPtr + numNewClusters; x++) {
+                for (const int* x = uniqueLabelsPtr; x < uniqueLabelsPtr + numClusters; x++) {
                     if (*x == clusterId) {
                         alt = x;
                     }
@@ -186,12 +186,12 @@ public:
                 if(sc.sparsity < sc_threshold && data.offsetInCluster > sc.offset) {
                     // printf("Cluster %d has sparsity %f < %f \t -> cutting at offset = %d\n", sc.clusterId, sc.sparsity, sc_threshold, sc.offset);
 
-                    data.label += numNewClusters;
+                    data.label += maxLabel + 1;
                 }
             }
         );
 
-        numActiveClusters += numNewClusters;
+        // numActiveClusters += numNewClusters;
     }
 
     /**
