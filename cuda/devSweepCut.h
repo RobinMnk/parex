@@ -12,7 +12,7 @@
 #include <thrust/sort.h>
 #include <thrust/scan.h>
 #include <thrust/reduce.h>
-#include <thrust/iterator/zip_iterator.h>
+#include <thrust/binary_search.h>
 
 #include <cassert>
 
@@ -61,6 +61,7 @@ __global__
 void nodeDiffKernel_Sparse(
         NodeIx numNodes,
         const NodeIx* __restrict__ neighbors,
+        const EdgeIx* __restrict__ ranges,
         NodeData* __restrict__ nodeData,
         const frac_t* __restrict__ values
 ) {
@@ -77,9 +78,10 @@ void nodeDiffKernel_Sparse(
     const frac_t myVal = __ldg(&values[i]);
 
     int nodeContribution = 0;
-    const EdgeIx rangeEnd = data.rangeStart + data.degree;
+    const EdgeIx rangeStart = ranges[i];
+    const EdgeIx rangeEnd = ranges[i] + data.degree;
 
-    for (NodeIx j = data.rangeStart; j < rangeEnd; ++j) {
+    for (NodeIx j = rangeStart; j < rangeEnd; ++j) {
         const NodeIx neighbor = __ldg(&neighbors[j]);
         const NodeData nbData = nodeData[neighbor];
 
@@ -105,6 +107,7 @@ void nodeDiffKernel_Sparse(
     nodeData[i].prefixEdgeDiff = nodeContribution;
     nodeData[i].prefixVolume = data.activeDegree;
     nodeData[i].offsetInCluster = 1;
+    nodeData[i].rwValue = myVal;
 }
 // This needs all random walk values done -> has to be computed after!
 
@@ -219,13 +222,28 @@ struct NodeDataScanOp {
 };
 
 struct ReduceOp {
+    const int* labelsPtr;
     const EdgeIx* clusterVolumesPtr;
+    const int numClusters;
 
-    explicit ReduceOp(const EdgeIx* volumesPtr) : clusterVolumesPtr(volumesPtr) {}
+    explicit ReduceOp(const int* labels, const EdgeIx* volumesPtr, const int num) : labelsPtr(labels), clusterVolumesPtr(volumesPtr), numClusters{num} {}
 
     __host__ __device__
     SweepCutData operator()(const NodeData& nodeData) const {
-        const EdgeIx totalVol  = clusterVolumesPtr[nodeData.label];
+
+        const int* it = thrust::lower_bound(
+            thrust::seq,
+            labelsPtr,
+            labelsPtr + numClusters,
+            nodeData.label
+        );
+        int correspondingIndex = static_cast<int>(it - labelsPtr);
+
+        if (labelsPtr[correspondingIndex] != nodeData.label) {
+            printf("ERROR: Label-data mismatch!!\n");
+        }
+
+        const EdgeIx totalVol  = clusterVolumesPtr[correspondingIndex];
 
         const EdgeIx edgeDiff = nodeData.prefixEdgeDiff;
         const EdgeIx prefixVol = nodeData.prefixVolume;
@@ -233,6 +251,9 @@ struct ReduceOp {
         // min(vol, totalVol - vol)
         const EdgeIx denom = (prefixVol < totalVol - prefixVol) ? prefixVol : (totalVol - prefixVol);
         const float sparsity  = (denom > 0) ? (static_cast<float>(edgeDiff) / static_cast<float>(denom)) : 2.0f;
+
+        // printf("Node %d has label %d at offset %d, prefixSum = %d and prefixVol = %d -> sparsity: %f, denom = %d\n", nodeData.nix, nodeData.label, nodeData.offsetInCluster, nodeData.prefixEdgeDiff, nodeData.prefixVolume, sparsity, denom);
+
 
         return { nodeData.label, sparsity , nodeData.offsetInCluster };
     }
@@ -251,6 +272,7 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
     nodeDiffKernel_Sparse<<<blocksPerGrid, threads, 0, nullptr>>>(
             gm.n,
             thrust::raw_pointer_cast(gm.getNeighbors().data()),
+            thrust::raw_pointer_cast(gm.getRanges().data()),
             partition.Current(),
             thrust::raw_pointer_cast(values.data())
     );
@@ -295,7 +317,7 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
      */
 
     // find internal volume of each cluster
-    thrust::reduce_by_key(
+    auto end = thrust::reduce_by_key(
             thrust::device,
             // Keys
             label_iter,
@@ -303,7 +325,7 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
             // Values
             thrust::make_transform_iterator(sortedData, DegreeExtractor()),
             // Output Label
-            thrust::make_discard_iterator(),
+            d_unique_labels.begin(),
             // Output Values
             pm.getVolumes().begin(),
             thrust::equal_to<int>(),
@@ -311,8 +333,28 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
     );
 
     EdgeIx* clusterVolumesPtr = thrust::raw_pointer_cast(pm.getVolumes().data());
+    int* labelsPtr = thrust::raw_pointer_cast(d_unique_labels.data());
 
-    // sweep cuts output very last possible cut -> I suspect the volumes are off
+
+    int num = end.second - pm.getVolumes().begin();
+
+    // std::vector<NodeData> nodes(numNodes);
+    // thrust::device_ptr<NodeData> dev_ptr(partition.Current());
+    // thrust::copy(dev_ptr, dev_ptr + numNodes, nodes.begin());
+    // for (NodeIx i = 0; i < numNodes; i++) {
+    //     printf("Node %d has label %d at offset %d, prefixSum = %d and prefixVol = %d\n", nodes[i].nix, nodes[i].label, nodes[i].offsetInCluster, nodes[i].prefixEdgeDiff, nodes[i].prefixVolume);
+    // }
+    //
+    //
+    // std::vector<EdgeIx> clusterVolumes(num);
+    // thrust::copy(pm.getVolumes().begin(), pm.getVolumes().begin() + num, clusterVolumes.begin());
+    // std::vector<EdgeIx> h_labels(num);
+    // thrust::copy(d_unique_labels.begin(), d_unique_labels.begin() + num, h_labels.begin());
+    // for (int i = 0; i < num; i++) {
+    //     printf("Cluster: %d, volume: %d\n", h_labels[i], clusterVolumes[i]);
+    // }
+
+
 
     // find best sweep cut for each cluster
     auto end_pair = thrust::reduce_by_key(
@@ -321,7 +363,7 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
         label_iter,
         label_iter + gm.n,
         // Values
-        thrust::make_transform_iterator(sortedData, ReduceOp(clusterVolumesPtr)),
+        thrust::make_transform_iterator(sortedData, ReduceOp(labelsPtr, clusterVolumesPtr, num)),
         // Output Label
         d_unique_labels.begin(),
         // Output Values

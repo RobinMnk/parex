@@ -10,13 +10,20 @@
 #include "utils/graph_io.h"
 #include "timer.h"
 
+constexpr auto filename = "../../graphs/uk.mtx";
+
 class CudaTest : public ::testing::TestWithParam<int> {
 protected:
     static Graph graph;
     static CudaDeviceManager cuda;
 
     [[maybe_unused]] static void SetUpTestSuite() {
-        graph = readDynGraph("../../graphs/mock.mtx").finalize();
+        graph = readDynGraph(filename).finalize();
+        cuda.initialize(graph);
+    }
+
+    static void resetGraph() {
+        graph = readDynGraph(filename).finalize();
         cuda.initialize(graph);
     }
 };
@@ -225,10 +232,40 @@ TEST_F(CudaTest, CutTest) {
     }
 }
 
+inline int hashVector(const std::vector<NodeIx>& vec) {
+    unsigned int sum = 0;
+
+    for (unsigned int x : vec) {
+        unsigned int h = x * 0x45d9f3b;
+        h = ((h >> 16) ^ h) * 0x45d9f3b;
+        h = ((h >> 16) ^ h);
+        sum += h;
+    }
+
+    return static_cast<int>(sum & 0x7FFFFFFF);
+}
+
+std::unordered_map<int, int> gpuLookup(const std::vector<NodeData>& pt) {
+
+    std::unordered_map<int, std::vector<NodeIx>> clusters;
+
+    for (const NodeData& nd: pt) {
+        clusters[nd.label].push_back(nd.nix);
+    }
+
+    std::unordered_map<int, int> lookup;
+
+    for (auto& [label, nodes]: clusters) {
+        lookup[hashVector(nodes)] = label;
+    }
+
+    return lookup;
+}
+
 
 TEST_P(CudaTest, RepeatedCuts) {
-    graph = readDynGraph("../../graphs/mock.mtx").finalize();
-    cuda.initialize(graph);
+    resetGraph();
+
     auto rwData = cuda.readRandomWalkValues();
     RandomWalk rw(graph.numNodes);
     rw.setData(rwData);
@@ -274,19 +311,33 @@ TEST_P(CudaTest, RepeatedCuts) {
         }
 
         cuda.computeSweepCuts();
-        cuda.cutClusters();
         auto gpuSweepCuts = cuda.readSweepCuts();
 
         pt = cuda.downloadPartition();
-        // std::vector<int> aem = cuda.downloadActiveEdgeMap();
+
+        std::unordered_map<int, int> lookup = gpuLookup(pt);
+
 
         NodeIx numClusters = active.size();
         for(NodeIx clusterId = 0; clusterId < numClusters; clusterId++) {
             SweepCut sweepCut = part.sweepCut(clusterId, z);
 
+            const Cluster& currentCluster = part.getCluster(clusterId);
+            std::vector<NodeIx> nodesInCluster;
+            nodesInCluster.reserve(currentCluster.size());
+            for (const ClusterVertex& cv: currentCluster) {
+                nodesInCluster.push_back(cv.nix);
+            }
+            int cpuHash = hashVector(nodesInCluster);
+            // std::cout << "cpuHash: " << cpuHash << std::endl;
+
+            auto it = lookup.find(cpuHash);
+            ASSERT_NE(it, lookup.end());
+            int gpuLabel = it->second;
+
             // check equal sparsity cuts
             for (int j = 0; j < gpuSweepCuts.clusterIds.size(); j++) {
-                if (gpuSweepCuts.clusterIds[j] == clusterId) {
+                if (gpuSweepCuts.clusterIds[j] == gpuLabel) {
                     ASSERT_NEAR(gpuSweepCuts.cuts[j].sparsity, sweepCut.sparsity, 0.00000001);
                     if (sweepCut.sparsity < 1 && gpuSweepCuts.cuts[j].sparsity < 1) {
                         // EXPECT_EQ(gpuSweepCuts.cuts[j].offset - 1, sweepCut.offset);
@@ -305,6 +356,10 @@ TEST_P(CudaTest, RepeatedCuts) {
         }
 
         std::vector<NodeIx> expectedLabels = getLabels(graph, part);
+
+
+        cuda.cutClusters();
+        pt = cuda.downloadPartition();
 
         // checks
         for (NodeIx nix = 0; nix < graph.numNodes; nix++) {

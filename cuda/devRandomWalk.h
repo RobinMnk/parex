@@ -52,6 +52,7 @@ __global__
 void lazyRandomWalkKernel(
         NodeIx numNodes,
         const NodeIx* __restrict__ neighbors,
+        const EdgeIx* __restrict__ ranges,
         NodeData* __restrict__ nodeData,
         const EdgeIx* __restrict__ activeDegrees,
         const frac_t* __restrict__ old_dist,
@@ -68,9 +69,10 @@ void lazyRandomWalkKernel(
     assert(data.nix == i && "nix mismatch!");
 
     frac_t incoming_sum = 0.0f;
-    const EdgeIx rangeEnd = data.rangeStart + data.degree;
+    const EdgeIx rangeStart = ranges[i];
+    const EdgeIx rangeEnd = ranges[i] + data.degree;
 
-    for (NodeIx j = data.rangeStart; j < rangeEnd; ++j) {
+    for (NodeIx j = rangeStart; j < rangeEnd; ++j) {
         const NodeIx neighbor = __ldg(&neighbors[j]);
         const NodeData nbData = nodeData[neighbor];
         const EdgeIx nbDeg = __ldg(&activeDegrees[neighbor]);
@@ -107,12 +109,8 @@ struct ClusterData {
 
 struct ClusterDataExtractorRW {
     __device__
-    inline ClusterData operator()(uint64_t packedKey) const {
-        uint32_t ordered = static_cast<uint32_t>(packedKey & 0xFFFFFFFF);
-        uint32_t mask = (ordered & 0x80000000) ? 0x80000000 : 0xffffffff;
-        uint32_t i = ordered ^ mask;
-
-        float rwValue = __uint_as_float(i);
+    inline ClusterData operator()(const NodeData& nodeData) const {
+        const float rwValue = nodeData.rwValue;
         return {rwValue, rwValue, rwValue, 1};
     }
 };
@@ -156,28 +154,17 @@ public:
         return clusterSums;
     }
 
-    int computeClusterData(cub::DoubleBuffer<NodeData>& partition, cub::DoubleBuffer<uint64_t>& packedKeys, thrust::device_vector<int>& uniqueLabels) {
-
-        std::vector<NodeData> pt(numNodes);
-        thrust::device_ptr<NodeData> dev_ptr(partition.Current());
-        thrust::copy(dev_ptr, dev_ptr + numNodes, pt.begin());
-        std::vector<frac_t> rw(numNodes);
-        thrust::copy(dist.begin(), dist.begin() + numNodes, rw.begin());
-
-        for (NodeIx nix = 0; nix < numNodes; nix++) {
-            printf("Node %d with label %d with rw=%f\n", pt[nix].nix, pt[nix].label, rw[pt[nix].nix]);
-        }
-
-
+    int computeClusterData(cub::DoubleBuffer<NodeData>& partition, thrust::device_vector<int>& uniqueLabels) {
         NodeData* partitionPtr = partition.Current();
         auto label_iter = thrust::make_transform_iterator(partitionPtr, LabelExtractorRW());
+        auto value_iter = thrust::make_transform_iterator(partitionPtr, ClusterDataExtractorRW());
 
         // find ClusterData for each cluster (to compute potential and average of each)
         auto end_iters = thrust::reduce_by_key(
             thrust::device,
             label_iter,
             label_iter + numNodes,
-            thrust::make_transform_iterator(packedKeys.Current(), ClusterDataExtractorRW()),
+            value_iter,
             uniqueLabels.begin(),
             clusterSums.begin(),
             thrust::equal_to<int>(),
@@ -202,8 +189,8 @@ public:
         fflush(stdout);
     }
 
-    void recenterAndDeactivateClusters(cub::DoubleBuffer<NodeData>& partition, cub::DoubleBuffer<uint64_t>& packedKeys, thrust::device_vector<int>& uniqueLabels) {
-        int numUnique = computeClusterData(partition, packedKeys, uniqueLabels);
+    void recenterAndDeactivateClusters(cub::DoubleBuffer<NodeData>& partition, thrust::device_vector<int>& uniqueLabels) {
+        int numUnique = computeClusterData(partition, uniqueLabels);
 
         thrust::sort_by_key(
             uniqueLabels.begin(),
@@ -212,6 +199,8 @@ public:
         );
         cudaDeviceSynchronize();
 
+
+        printf("Before:\n");
         print(numUnique, uniqueLabels);
 
 
@@ -229,7 +218,7 @@ public:
                 const int label = data.label;
 
                 if (data.label < 0) {
-                    printf("node %d with label %d returns because label is negative\n", data.nix, label);
+                    // printf("node %d with label %d returns because label is negative\n", data.nix, label);
                     return;
                 }; // cluster already inactive
 
@@ -248,7 +237,7 @@ public:
                 const ClusterData cd = clusterDataPtr[correspondingSweepCutIndex];
 
                 if (cd.totalElements < 2) {
-                    printf("node %d with label %d returns because numElements = %d. Note that totalClusters = %d\n", data.nix, label, cd.totalElements, numUnique);
+                    // printf("node %d with label %d returns because numElements = %d. Note that totalClusters = %d\n", data.nix, label, cd.totalElements, numUnique);
                     return;
                 };
 
@@ -263,18 +252,18 @@ public:
                 // } else {
                     const float average = cd.rwSum / static_cast<float>(cd.totalElements);
                     distPtr[data.nix] -= average; // TODO: write this diff to any unused field within NodeData! (save random write)
+                    data.rwValue -= average; // TODO: this line is just for debugging
                 // }
 
-                printf("node %d with label %d, old rwValue = %f and offset = %d loaded this cluster data (%d): [average = %f, potential = %f, numElements = %d]\n", data.nix, label, rw, data.offsetInCluster, correspondingSweepCutIndex, average, cd.maxPotential - cd.minPotential, cd.totalElements);
+                // printf("node %d with label %d, old rwValue = %f and offset = %d loaded this cluster data (%d): [average = %f, potential = %f, numElements = %d]\n", data.nix, label, rw, data.offsetInCluster, correspondingSweepCutIndex, average, cd.maxPotential - cd.minPotential, cd.totalElements);
 
             }
         );
 
-
         printf("After\n");
-        computeClusterData(partition, packedKeys, uniqueLabels);
+        computeClusterData(partition, uniqueLabels);
         print(numUnique, uniqueLabels);
-        printf("\n");
+        // printf("\n");
     }
 
 
@@ -297,6 +286,7 @@ public:
         lazyRandomWalkKernel<<<blocksPerGrid, threads, 0, stream>>>(
                 numNodes,
                 thrust::raw_pointer_cast(gm.getNeighbors().data()),
+                thrust::raw_pointer_cast(gm.getRanges().data()),
                 partition.Current(),
                 thrust::raw_pointer_cast(activeDegrees.data()),
                 thrust::raw_pointer_cast(old_dist.data()),

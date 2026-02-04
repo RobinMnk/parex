@@ -42,9 +42,9 @@ struct NodeData {
     NodeIx nix;
     int label;  // a negative label represents inactive cluster
     EdgeIx degree;
-    NodeIx rangeStart;
+    EdgeIx activeDegree; // this one can go if it needs to
 
-    EdgeIx activeDegree;
+    float rwValue;
     EdgeIx prefixVolume;
     int prefixEdgeDiff;
     NodeIx offsetInCluster;

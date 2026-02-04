@@ -24,7 +24,6 @@ struct InitFunctor {
             static_cast<NodeIx>(i),
             0,
             end - start,
-            start,
             end - start,
         };
     }
