@@ -71,12 +71,16 @@ void disableEdgesKernel(
 
     EdgeIx revEdge = edgeMap[edgeIdx];
     NodeIx srcNode = neighbors[revEdge];
+
+    if (srcNode == INVALID_EDGE) {
+        neighbors[edgeIdx] = INVALID_EDGE;
+        return;
+    }
+
     NodeIx srcLabel = nodeData[srcNode].label;
 
     assert(edgeMap[revEdge] == edgeIdx);
     assert(nodeData[srcNode].nix == srcNode);
-
-
     assert(nodeData[tgtNode].nix == tgtNode);
 
     if (srcLabel != tgtLabel) {
