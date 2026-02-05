@@ -57,11 +57,18 @@ int main() {
 
     std::cout << "Reading input graph: ";
     std::cout.flush();
-    DynamicGraph G_dyn = readDynGraph("../graphs/coPapersCiteseer.mtx");
+    DynamicGraph G_dyn = readDynGraph("../graphs/com-LiveJournal.mtx");
     Graph G = G_dyn.finalize();
     std::cout << "loaded " << G.numNodes << " nodes and " << G.numEdges << " edges\nBegin Expander Decomposition" << std::endl;
 
-    test2(G);
+    Timer t2;
+    t2.start();
+    CudaDeviceManager cuda;
+    cuda.initialize(G);
+    cuda.expanderDecomposition();
+
+    printf("Terminated after %fs\n", t2.timeSeconds());
+
 
     return 1;
 
