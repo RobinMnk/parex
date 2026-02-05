@@ -54,6 +54,7 @@ struct CudaDeviceManager::Impl {
         // absolutely crucial!!
         fixupPartition();
 
+        pt->disableEdges(*gm);
         pt->computeActiveDegrees(*gm);
     }
 

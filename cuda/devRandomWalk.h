@@ -133,22 +133,29 @@ struct ClusterDataReduceOp {
 
 
 struct WalkEdgeLogic {
+    const NodeIx numNodes;
     const NodeIx* __restrict__ neighbors;
-    const EdgeIx* __restrict__ edgeMap;
+    // const EdgeIx* __restrict__ edgeMap;
     const EdgeIx* __restrict__ activeDegrees;
     const frac_t* __restrict__ dist;
-    const NodeData* __restrict__ nodes;
+    // const NodeData* __restrict__ nodes;
 
     __device__ __forceinline__
     float operator()(EdgeIx edgeIdx) const {
-        const EdgeIx revEdge = edgeMap[edgeIdx];
-        const NodeIx srcNode = neighbors[revEdge];
-
-        const NodeIx tgtNode = neighbors[edgeIdx];
-
-        if (__ldg(&nodes[srcNode].label) != __ldg(&nodes[tgtNode].label)) {
+        // const EdgeIx revEdge = edgeMap[edgeIdx];
+        // const NodeIx srcNode = neighbors[revEdge];
+        //
+        // const NodeIx tgtNode = neighbors[edgeIdx];
+        //
+        // if (__ldg(&nodes[srcNode].label) != __ldg(&nodes[tgtNode].label)) {
+        //     return 0.0f;
+        // }
+        const NodeIx tgtNode = __ldg(&neighbors[edgeIdx]);
+        if (tgtNode == numNodes+1000) {
+            // inactive edge
             return 0.0f;
         }
+
 
         const EdgeIx nbDeg = __ldg(&activeDegrees[tgtNode]);
 
@@ -349,7 +356,7 @@ public:
         frac_t* incomingSumsPtr = thrust::raw_pointer_cast(incomingSums.data());
 
         thrust::counting_iterator<EdgeIx> edgeIndexIter(0);
-        WalkEdgeLogic functor{neighborsPtr, edgeMapPtr, activeDegsPtr, distPtr, partition.Current()};
+        WalkEdgeLogic functor{numNodes, neighborsPtr, activeDegsPtr, distPtr};
 
         auto transIter = thrust::make_transform_iterator(edgeIndexIter, functor);
 
@@ -483,7 +490,7 @@ public:
 
 private:
     void prepare_cub() {
-        WalkEdgeLogic dryRunFunctor{nullptr, nullptr, nullptr, nullptr, nullptr};
+        WalkEdgeLogic dryRunFunctor{numNodes, nullptr, nullptr, nullptr};
         auto dryRunIter = thrust::make_transform_iterator(thrust::make_counting_iterator<EdgeIx>(0), dryRunFunctor);
 
         EdgeIx* nullOffsets = static_cast<EdgeIx*>(nullptr);
@@ -493,7 +500,7 @@ private:
         cudaError_t err = cub::DeviceSegmentedReduce::Sum(
             nullptr, temp_storage_bytes,
             dryRunIter, nullOutput,
-            numNodes, nullOffsets, nullOffsets
+            static_cast<int>(numNodes), nullOffsets, nullOffsets
         );
 
         if (err != cudaSuccess) {

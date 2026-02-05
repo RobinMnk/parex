@@ -32,6 +32,8 @@ constexpr frac_t rw_stay = 0.1;
 constexpr frac_t rw_threshold = 1e-4;
 constexpr float sc_threshold = 0.3;
 
+constexpr NodeIx INVALID_EDGE = static_cast<NodeIx>(-1);
+
 struct SweepCutData {
     int clusterId;
     float sparsity;

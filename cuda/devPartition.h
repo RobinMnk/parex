@@ -30,31 +30,69 @@ struct InitFunctor {
 };
 
 struct ActiveEdgeLogic {
-    const NodeData* nodes;
+    NodeIx numNodes;
     const NodeIx* neighbors;
-    const EdgeIx* edgeMap;
 
     __device__
     int operator()(EdgeIx edgeIdx) const {
-        EdgeIx revEdge = edgeMap[edgeIdx];
-        NodeIx srcNode = neighbors[revEdge];
-        NodeIx srcLabel = nodes[srcNode].label;
-
-        assert(edgeMap[revEdge] == edgeIdx);
-        assert(nodes[srcNode].nix == srcNode);
-
-        NodeIx tgtNode = neighbors[edgeIdx];
-        NodeIx tgtLabel = __ldg(&nodes[tgtNode].label);
-
-        assert(nodes[tgtNode].nix == tgtNode);
-
-        return (srcLabel == tgtLabel) ? 1 : 0;
+        return neighbors[edgeIdx] != numNodes+1000 ? 1 : 0;
+        // EdgeIx revEdge = edgeMap[edgeIdx];
+        // NodeIx srcNode = neighbors[revEdge];
+        // NodeIx srcLabel = nodes[srcNode].label;
+        //
+        // assert(edgeMap[revEdge] == edgeIdx);
+        // assert(nodes[srcNode].nix == srcNode);
+        //
+        // NodeIx tgtNode = neighbors[edgeIdx];
+        // NodeIx tgtLabel = __ldg(&nodes[tgtNode].label);
+        //
+        // assert(nodes[tgtNode].nix == tgtNode);
+        //
+        // return (srcLabel == tgtLabel) ? 1 : 0;
     }
 };
+
+__global__
+void disableEdgesKernel(
+    NodeIx numNodes,
+    EdgeIx totalEdges,
+    const NodeData* __restrict__ nodeData,
+    const EdgeIx* __restrict__ edgeMap,
+    NodeIx* __restrict__ neighbors
+) {
+    EdgeIx edgeIdx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (edgeIdx >= totalEdges) return;
+
+    NodeIx tgtNode = neighbors[edgeIdx];
+    if (tgtNode == numNodes+1000) {
+        // edge already inactive
+        return;
+    }
+
+    NodeIx tgtLabel = __ldg(&nodeData[tgtNode].label);
+
+    EdgeIx revEdge = edgeMap[edgeIdx];
+    NodeIx srcNode = neighbors[revEdge];
+    NodeIx srcLabel = nodeData[srcNode].label;
+
+    assert(edgeMap[revEdge] == edgeIdx);
+    assert(nodes[srcNode].nix == srcNode);
+
+
+    assert(nodes[tgtNode].nix == tgtNode);
+
+    if (srcLabel != tgtLabel) {
+        // inactive edges point to totalEdges
+        neighbors[edgeIdx] = numNodes+1000; // this is an invalid index
+    }
+}
+
+
 
 
 class PartitionManager {
     NodeIx numNodes;
+    EdgeIx totalEdges;
     thrust::device_vector<NodeData> partition1;
     thrust::device_vector<NodeData> partition2;
     cub::DoubleBuffer<NodeData> partition;
@@ -73,6 +111,7 @@ public:
 
     explicit PartitionManager(GraphManager& gm) :
         numNodes(gm.n),
+        totalEdges(2*gm.m),
         partition1(gm.n),
         partition2(gm.n),
         partition(thrust::raw_pointer_cast(partition1.data()),
@@ -98,7 +137,7 @@ public:
 
         auto input_iter = thrust::make_transform_iterator(
                 thrust::make_counting_iterator(0),
-                ActiveEdgeLogic{partition.Current(), neighbors, edgeMapPtr}
+                ActiveEdgeLogic{numNodes, neighbors}
         );
 
         cub::DeviceSegmentedReduce::Sum(
@@ -112,6 +151,21 @@ public:
         );
 
         cudaMalloc(&d_temp_storage, temp_storage_bytes);
+    }
+
+    void disableEdges(GraphManager& gm) {
+        const EdgeIx* edgeMapPtr = thrust::raw_pointer_cast(gm.getEdgeMap().data());
+        NodeIx* neighborsPtr = thrust::raw_pointer_cast(gm.getNeighbors().data());
+
+        int gridSize = (totalEdges + threads - 1) / threads;
+
+        disableEdgesKernel<<<gridSize, threads, 0, nullptr>>>(
+            numNodes,
+            totalEdges,
+            partition.Current(),
+            edgeMapPtr,
+            neighborsPtr
+        );
     }
 
     std::vector<int> getActiveEdgeMap(GraphManager& gm) {
@@ -128,7 +182,7 @@ public:
             input_iter,
             input_iter + numNodes,
             d_aem.begin(),
-            ActiveEdgeLogic{partition.Current(), neighbors, edgeMapPtr}
+            ActiveEdgeLogic{numNodes, neighbors}
         );
 
         thrust::copy(d_aem.begin(), d_aem.end(), aem.begin());
@@ -182,13 +236,12 @@ public:
      * requires invariant partition[i].nix == i
      */
     void computeActiveDegrees(GraphManager& gm) {
-        const EdgeIx* edgeMapPtr = thrust::raw_pointer_cast(gm.getEdgeMap().data());
         const EdgeIx* rangesPtr = thrust::raw_pointer_cast(gm.getRanges().data());
         const NodeIx* neighborsPtr = thrust::raw_pointer_cast(gm.getNeighbors().data());
 
         auto input_iter = thrust::make_transform_iterator(
                 thrust::make_counting_iterator(0),
-                ActiveEdgeLogic{partition.Current(), neighborsPtr, edgeMapPtr}
+                ActiveEdgeLogic{numNodes, neighborsPtr}
         );
 
         cub::DeviceSegmentedReduce::Sum(

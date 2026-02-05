@@ -83,6 +83,11 @@ void nodeDiffKernel_Sparse(
 
     for (NodeIx j = rangeStart; j < rangeEnd; ++j) {
         const NodeIx neighbor = __ldg(&neighbors[j]);
+        if (neighbor == numNodes+1000) {
+            // inactive edge;
+            continue;
+        }
+
         const NodeData nbData = nodeData[neighbor];
 
         assert(nbData.nix == neighbor && "neighbor nix mismatch!");

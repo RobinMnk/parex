@@ -84,7 +84,7 @@
 
 class GraphManager {
     // Graph
-    const thrust::device_vector<NodeIx> neighbors;
+    thrust::device_vector<NodeIx> neighbors;
     const thrust::device_vector<EdgeIx> edgeMap;
     const thrust::device_vector<EdgeIx> ranges;
 
@@ -130,7 +130,7 @@ public:
         return ranges;
     }
 
-    const thrust::device_vector<NodeIx>& getNeighbors() const {
+    thrust::device_vector<NodeIx>& getNeighbors() {
         return neighbors;
     }
 
