@@ -10,7 +10,7 @@
 #include "utils/graph_io.h"
 #include "timer.h"
 
-constexpr auto filename = "../../graphs/uk.mtx";
+constexpr auto filename = "../../graphs/mock.mtx";
 
 class CudaTest : public ::testing::TestWithParam<int> {
 protected:

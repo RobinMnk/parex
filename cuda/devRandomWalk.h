@@ -185,15 +185,13 @@ class RandomWalkManager {
     thrust::device_vector<frac_t> dist;
     thrust::device_vector<frac_t> incomingSums;
 
-    thrust::device_vector<ClusterData> clusterSums;
-
     NodeIx numNodes;
     void* d_temp_storage = nullptr;
     size_t temp_storage_bytes = 0;
-    int maxLabel{0};
+    // int maxLabel{0};
 
 public:
-    explicit RandomWalkManager(NodeIx n) : dist(n), incomingSums(n), clusterSums(n), numNodes(n) {
+    explicit RandomWalkManager(NodeIx n) : dist(n), incomingSums(n), numNodes(n) {
         initRandomWalk(seed);
         prepare_cub();
     }
@@ -202,133 +200,8 @@ public:
         if (d_temp_storage) cudaFree(d_temp_storage);
     }
 
-    auto& getClusterData() {
-        return clusterSums;
-    }
-
-    int computeClusterData(cub::DoubleBuffer<NodeData>& partition, thrust::device_vector<int>& uniqueLabels) {
-        NodeData* partitionPtr = partition.Current();
-        auto label_iter = thrust::make_transform_iterator(partitionPtr, LabelExtractorRW());
-        auto value_iter = thrust::make_transform_iterator(partitionPtr, ClusterDataExtractorRW());
-
-        // find ClusterData for each cluster (to compute potential and average of each)
-        auto end_iters = thrust::reduce_by_key(
-            thrust::device,
-            label_iter,
-            label_iter + numNodes,
-            value_iter,
-            uniqueLabels.begin(),
-            clusterSums.begin(),
-            thrust::equal_to<int>(),
-            ClusterDataReduceOp()
-        );
-
-
-        int numUnique = end_iters.second - clusterSums.begin();
-
-        thrust::sort_by_key(
-            uniqueLabels.begin(),
-            uniqueLabels.begin() + numUnique,
-            clusterSums.begin()
-        );
-
-        thrust::copy_n(uniqueLabels.begin() + numUnique - 1, 1, &maxLabel);
-
-        // printf("There are %d clusters and the maximum label is %d\n", numUnique, maxLabel);
-
-        return numUnique;
-    }
-
-
-    void print(int numUnique, thrust::device_vector<int>& uniqueLabels) {
-        std::vector<ClusterData> cst(numUnique);
-        thrust::copy(clusterSums.begin(), clusterSums.begin() + numUnique, cst.begin());
-        std::vector<int> lbl(numUnique);
-        thrust::copy(uniqueLabels.begin(), uniqueLabels.begin() + numUnique, lbl.begin());
-        for (int i = 0; i < numUnique; i++) {
-            const float clusterPotential = cst[i].maxPotential - cst[i].minPotential;
-            const float average = cst[i].rwSum / static_cast<float>(cst[i].totalElements);
-            printf("%d:  Cluster %d [average = %f, potential = %f, numElements = %d]\n", i, lbl[i], average, clusterPotential, cst[i].totalElements);
-        }
-        fflush(stdout);
-    }
-
-    int recenterAndDeactivateClusters(cub::DoubleBuffer<NodeData>& partition, thrust::device_vector<int>& uniqueLabels) {
-        int numUnique = computeClusterData(partition, uniqueLabels);
-
-        cudaDeviceSynchronize();
-
-
-        // printf("Before:\n");
-        // print(numUnique, uniqueLabels);
-
-
-        // subtract average from each (active) node
-        const ClusterData* clusterDataPtr = thrust::raw_pointer_cast(clusterSums.data());
-        const int* uniqueLabelsPtr = thrust::raw_pointer_cast(uniqueLabels.data());
-
-        frac_t* distPtr = thrust::raw_pointer_cast(dist.data());
-
-        thrust::for_each_n(
-            thrust::device,
-            partition.Current(),
-            numNodes,
-            [clusterDataPtr, uniqueLabelsPtr, distPtr, numUnique] __device__ (NodeData& data) {
-                const int label = data.label;
-
-                if (data.label < 0) {
-                    // printf("node %d with label %d returns because label is negative\n", data.nix, label);
-                    return;
-                }; // cluster already inactive
-
-                const int* it = thrust::lower_bound(
-                    thrust::seq,
-                    uniqueLabelsPtr,
-                    uniqueLabelsPtr + numUnique,
-                    label
-                );
-                int correspondingSweepCutIndex = static_cast<int>(it - uniqueLabelsPtr);
-
-                if (uniqueLabelsPtr[correspondingSweepCutIndex] != label) {
-                    printf("ERROR: label mismatch!! For nix = %d:\t%d != %d\n", data.nix, label, uniqueLabelsPtr[correspondingSweepCutIndex]);
-                }
-
-                const ClusterData cd = clusterDataPtr[correspondingSweepCutIndex];
-
-                // if (cd.totalElements < 2) {
-                //     // printf("node %d with label %d returns because numElements = %d. Note that totalClusters = %d\n", data.nix, label, cd.totalElements, numUnique);
-                //     return;
-                // };
-
-                const float clusterPotential = cd.maxPotential - cd.minPotential;
-
-                if (clusterPotential < rw_threshold || cd.totalElements < 2) {
-                    // this cluster should be deactivated
-                    int smallestLabel = uniqueLabelsPtr[0];
-                    // printf("Deactivating cluster: %d -> %d \t smallest: %d\n", label, smallestLabel - data.label - 1, smallestLabel);
-                    data.label = smallestLabel - data.label - 1;
-                } else {
-                    data.label = correspondingSweepCutIndex;
-
-                    const float average = cd.rwSum / static_cast<double>(cd.totalElements);
-                    distPtr[data.nix] -= average; // TODO: write this diff to any unused field within NodeData! (save random write)
-                    data.rwValue -= average; // TODO: this line is just for debugging
-                }
-
-                // printf("moved node %d from cluster %d to cluster %d\n", data.nix, label, data.label);
-
-                // printf("node %d with label %d, old rwValue = %f and offset = %d loaded this cluster data (%d): [average = %f, potential = %f, numElements = %d]\n", data.nix, label, rw, data.offsetInCluster, correspondingSweepCutIndex, average, cd.maxPotential - cd.minPotential, cd.totalElements);
-
-            }
-        );
-
-        // printf("After\n");
-        // int x = computeClusterData(partition, uniqueLabels);
-        // // assert(x-1 == maxLabel);
-        // print(numUnique, uniqueLabels);
-        // printf("\n");
-
-        return numUnique;
+    auto& getValues() {
+        return dist;
     }
 
     void stepFast(GraphManager& gm,
@@ -396,74 +269,9 @@ public:
     //     );
     // }
 
-    int getMaxLabel() const {
-        return maxLabel;
-    }
-
-
-//    void newStep(GraphManager& gm,
-//              cub::DoubleBuffer<NodeData> partition,
-//              cub::DoubleBuffer<uint64_t> packedKeys,
-//              cudaStream_t stream = nullptr
-//    ) {
-//
-//        thrust::transform(thrust::cuda::par.on(stream),
-//                          old_dist.begin(), old_dist.end(),
-//                          gr.active_degrees,
-//                          node_val.begin(),
-//            [move_weight] __device__ (frac_t d, EdgeIx deg) {
-//                return (deg > 0) ? (d / static_cast<frac_t>(deg)) * move_weight : 0.0f;
-//            }
-//        );
-//
-//    }
-
-
-
-//    void stepSlow(GraphManager& gm, cudaStream_t stream = nullptr) {
-//        old_dist.swap(dist);
-//
-//        const frac_t stay_weight = rw_stay;
-//        const frac_t move_weight = 1.0f - rw_stay;
-//
-//        // node_val = (old_dist / degree) * move_weight
-//        thrust::transform(thrust::cuda::par.on(stream),
-//                          old_dist.begin(), old_dist.end(),
-//                          gr.active_degrees,
-//                          node_val.begin(),
-//            [move_weight] __device__ (frac_t d, EdgeIx deg) {
-//                return (deg > 0) ? (d / static_cast<frac_t>(deg)) * move_weight : 0.0f;
-//            }
-//        );
-//
-//        frac_t* raw_node_vals = thrust::raw_pointer_cast(node_val.data());
-//        frac_t* raw_dist_out = thrust::raw_pointer_cast(dist.data());
-//        NodeIx* raw_ranges = thrust::raw_pointer_cast(gm.getRanges().data());
-//
-//        auto v_mapped_iter = thrust::make_permutation_iterator(raw_node_vals, gr.neighbors);
-//
-//        // dist = sum_neighbors node_val
-//        cub::DeviceSegmentedReduce::Sum(
-//                d_temp_storage,
-//                temp_storage_bytes,
-//                v_mapped_iter,
-//                raw_dist_out,
-//                static_cast<int>(numNodes),
-//                raw_ranges,
-//                raw_ranges + 1,
-//                stream
-//        );
-//
-//        // dist += (1 - rw_stay) * old_dist
-//        thrust::transform(thrust::cuda::par.on(stream),
-//                          dist.begin(), dist.end(),
-//                          old_dist.begin(),
-//                          dist.begin(),
-//            [stay_weight] __device__ (frac_t summed_neighbors, frac_t self_old) {
-//                return summed_neighbors + (self_old * stay_weight);
-//            }
-//        );
-//    }
+    // int getMaxLabel() const {
+    //     return maxLabel;
+    // }
 
     [[nodiscard]] const thrust::device_vector<frac_t>& randomWalkValues() const {
         return dist;

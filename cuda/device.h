@@ -46,15 +46,17 @@ struct CudaDeviceManager::Impl {
     }
 
     void cutClusters() {
-        pt->cutClusters(sc->getSweepCuts(), sc->getLabels(), sc->getNumActiveClusters(), rw->getMaxLabel());
+        pt->cutClusters(sc->getSweepCuts());
 
-        int numClusters = rw->recenterAndDeactivateClusters(pt->getPartitionView(), sc->getLabels());
-        sc->setNumActiveClusters(numClusters);
+        pt->computeClusterData();
+
+        pt->recenterAndDeactivateClusters(rw->getValues());
 
         // absolutely crucial!!
         fixupPartition();
 
         pt->disableEdges(*gm);
+
         pt->computeActiveDegrees(*gm);
     }
 
@@ -65,8 +67,14 @@ struct CudaDeviceManager::Impl {
     }
 
     AllSweepCuts getSweepCuts() {
-        return sc->resultToCPU();
+        NodeIx numActiveClusters = pt->numActiveClusters;
+        std::vector<int> clusterIds(numActiveClusters);
+        std::vector<SweepCutData> cuts(numActiveClusters);
+        thrust::copy(pt->getActiveLabels().begin(), pt->getActiveLabels().begin() + numActiveClusters, clusterIds.begin());
+        thrust::copy(sc->getSweepCuts().begin(), sc->getSweepCuts().begin() + numActiveClusters, cuts.begin());
+        return {clusterIds, cuts};
     }
+
 
     std::vector<NodeData> downloadPartition() {
         return pt->downloadPartition();
@@ -148,43 +156,43 @@ void printNodes(std::vector<NodeData>& nodes, NodeIx n, NodeData* ptr) {
 // }
 
 
-void CudaDeviceManager::Impl::printInf(
-    std::vector<int>& labels,
-    std::vector<ClusterData>& clusters,
-    std::vector<EdgeIx>& degs,
-    std::vector<SweepCutData>& scs,
-    std::vector<NodeData>& nodes
-) {
-    auto& x = sc->getLabels();
-    thrust::copy(x.begin(), x.end(), labels.begin());
-    for (int y = 0; y < sc->getNumActiveClusters(); y++) std::cout << labels[y] << ", ";
-    std::cout << std::endl;
-
-    // rw->computeClusterData(pt->getPartitionView(), sc->getLabels());
-    auto& y = rw->getClusterData();
-    thrust::copy(y.begin(), y.begin() + sc->getNumActiveClusters(), clusters.begin());
-
-    auto& u = sc->getSweepCuts();
-    thrust::copy(u.begin(), u.begin() + sc->getNumActiveClusters(), scs.begin());
-
-    auto& z = pt->getActiveDegrees();
-    thrust::copy(z.begin(), z.end(), degs.begin());
-
-    thrust::device_ptr<NodeData> dev_ptr(pt->getPartitionView().Current());
-    thrust::copy(dev_ptr, dev_ptr + gm->n, nodes.begin());
-
-    for (auto i = 0; i < sc->getNumActiveClusters(); i++) {
-        std::cout << "cluster " << labels[i] << ":\n"
-                     "\tpotential: " << clusters[i].maxPotential - clusters[i].minPotential <<
-                         "\n\taverage:   " << clusters[i].rwSum / clusters[i].totalElements <<
-                         "\n\telements:  " << clusters[i].totalElements <<
-                            "\n\tsc-id:     " << scs[i].clusterId <<
-                         "\n\tsc-spars:  " << scs[i].sparsity <<
-                         "\n\tsc-offs:  " << scs[i].offset
-        << std::endl;
-    }
-    std::cout << "\n" << std::endl;
-}
+// void CudaDeviceManager::Impl::printInf(
+//     std::vector<int>& labels,
+//     std::vector<ClusterData>& clusters,
+//     std::vector<EdgeIx>& degs,
+//     std::vector<SweepCutData>& scs,
+//     std::vector<NodeData>& nodes
+// ) {
+//     auto& x = sc->getLabels();
+//     thrust::copy(x.begin(), x.end(), labels.begin());
+//     for (int y = 0; y < sc->getNumActiveClusters(); y++) std::cout << labels[y] << ", ";
+//     std::cout << std::endl;
+//
+//     // rw->computeClusterData(pt->getPartitionView(), sc->getLabels());
+//     auto& y = rw->getClusterData();
+//     thrust::copy(y.begin(), y.begin() + sc->getNumActiveClusters(), clusters.begin());
+//
+//     auto& u = sc->getSweepCuts();
+//     thrust::copy(u.begin(), u.begin() + sc->getNumActiveClusters(), scs.begin());
+//
+//     auto& z = pt->getActiveDegrees();
+//     thrust::copy(z.begin(), z.end(), degs.begin());
+//
+//     thrust::device_ptr<NodeData> dev_ptr(pt->getPartitionView().Current());
+//     thrust::copy(dev_ptr, dev_ptr + gm->n, nodes.begin());
+//
+//     for (auto i = 0; i < sc->getNumActiveClusters(); i++) {
+//         std::cout << "cluster " << labels[i] << ":\n"
+//                      "\tpotential: " << clusters[i].maxPotential - clusters[i].minPotential <<
+//                          "\n\taverage:   " << clusters[i].rwSum / clusters[i].totalElements <<
+//                          "\n\telements:  " << clusters[i].totalElements <<
+//                             "\n\tsc-id:     " << scs[i].clusterId <<
+//                          "\n\tsc-spars:  " << scs[i].sparsity <<
+//                          "\n\tsc-offs:  " << scs[i].offset
+//         << std::endl;
+//     }
+//     std::cout << "\n" << std::endl;
+// }
 
 
 void CudaDeviceManager::Impl::expanderDecomposition() {
@@ -198,7 +206,7 @@ void CudaDeviceManager::Impl::expanderDecomposition() {
 
     Timer t;
     t.start();
-    while (i++ < 2000 && rw->getMaxLabel() >= 0) {
+    while (i++ < 2000 && pt->numActiveClusters > 0) {
         // printf("==================================================================================== It: %d\n", (i+1));
 
         iterateRandomWalk();
