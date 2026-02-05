@@ -16,46 +16,93 @@
 
 #include <cassert>
 
+__inline__ __device__
+int warpReduceSumInt(int val) {
+    #pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1)
+        val += __shfl_down_sync(0xffffffff, val, offset);
+    return val;
+}
+
 __global__
-void nodeDiffKernel(
+void nodeDiffKernel_Sparse_WarpParallel(
         NodeIx numNodes,
-        const NodeIx* __restrict__ ranges,
         const NodeIx* __restrict__ neighbors,
-        const int* __restrict__ labels,
-        const frac_t* __restrict__ values,
-        frac_t* __restrict__ contributions
+        const EdgeIx* __restrict__ ranges,
+        NodeData* __restrict__ nodeData,
+        const frac_t* __restrict__ values
 ) {
-    const NodeIx i = (blockIdx.x * blockDim.x + threadIdx.x) / warpSize;
-    if (i >= numNodes) return;
+    constexpr int WARP = 32;
 
-    const NodeIx start = ranges[i];
-    const NodeIx end = ranges[i+1];
-    const int myLabel = labels[i];
-    const frac_t myVal = values[i];
+    const int globalThreadId = blockIdx.x * blockDim.x + threadIdx.x;
+    const int warpId         = globalThreadId / WARP;   // node index
+    const int lane           = threadIdx.x & (WARP - 1);
 
-    frac_t localSum = 0.0f;
+    if (warpId >= numNodes) return;
 
-    // Warp-parallel loop over neighbors
-    for (NodeIx j = start + (threadIdx.x % warpSize); j < end; j += warpSize) {
-        const NodeIx neighbor = neighbors[j];
+    const NodeIx i = warpId;
 
-        // Load label first to potentially avoid second load
-        if (labels[neighbor] == myLabel) {
-            const frac_t otherVal = values[neighbor];
-            localSum += (otherVal < myVal) ? -1.0f : 1.0f;
+    NodeData data;
+    if (lane == 0) {
+        data = nodeData[i];
+        assert(data.nix == i && "nix mismatch!");
+    }
+
+    const int words = (sizeof(NodeData) + sizeof(int) - 1) / sizeof(int);
+    int* dataWords = reinterpret_cast<int*>(&data);
+
+    #pragma unroll
+    for (int k = 0; k < words; ++k) {
+        int v = (lane == 0) ? dataWords[k] : 0;
+        v = __shfl_sync(0xffffffff, v, 0);
+        dataWords[k] = v;
+    }
+
+    if (data.label < 0) return;
+
+    frac_t myVal;
+    if (lane == 0) myVal = __ldg(&values[i]);
+    myVal = __shfl_sync(0xffffffff, myVal, 0);
+
+    const EdgeIx rangeStart = __ldg(&ranges[i]);
+    const EdgeIx rangeEnd   = rangeStart + data.degree;
+
+    int localContribution = 0;
+
+    for (EdgeIx j = rangeStart + lane; j < rangeEnd; j += WARP) {
+
+        const NodeIx neighbor = __ldg(&neighbors[j]);
+        if (neighbor == INVALID_EDGE) continue;
+
+        const NodeData nbData = nodeData[neighbor];
+        assert(nbData.nix == neighbor && "neighbor nix mismatch!");
+
+        if (nbData.label == data.label) {
+
+            const frac_t otherVal = __ldg(&values[neighbor]);
+
+            bool isBefore;
+            if (otherVal != myVal) {
+                isBefore = (otherVal < myVal);
+            } else {
+                isBefore = (neighbor < i);
+            }
+
+            localContribution += isBefore ? -1 : 1;
         }
     }
 
-    // Parallel reduction within the warp
-    for (int offset = warpSize / 2; offset > 0; offset /= 2) {
-        localSum += __shfl_down_sync(0xFFFFFFFF, localSum, offset);
-    }
+    int nodeContribution = warpReduceSumInt(localContribution);
 
-    // Lane 0 writes the final result
-    if ((threadIdx.x % warpSize) == 0) {
-        contributions[i] = localSum;
+    if (lane == 0) {
+        nodeData[i].prefixEdgeDiff  = nodeContribution;
+        nodeData[i].prefixVolume    = data.activeDegree;
+        nodeData[i].offsetInCluster = 1;
+        nodeData[i].rwValue         = myVal;
     }
 }
+
+
 
 __global__
 void nodeDiffKernel_Sparse(
@@ -282,9 +329,11 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
 
     auto& partition = pm.getPartitionView();
 
-    unsigned int blocksPerGrid = (gm.n + threads - 1) / threads;
+    constexpr int WARP = 32;
+    int warpsPerBlock = threads / WARP;                 // e.g. 256 → 8
+    int numBlocks     = (gm.n + warpsPerBlock - 1) / warpsPerBlock;
 
-    nodeDiffKernel_Sparse<<<blocksPerGrid, threads, 0, nullptr>>>(
+    nodeDiffKernel_Sparse_WarpParallel<<<numBlocks, threads>>>(
             gm.n,
             thrust::raw_pointer_cast(gm.getNeighbors().data()),
             thrust::raw_pointer_cast(gm.getRanges().data()),
