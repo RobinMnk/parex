@@ -17,10 +17,15 @@ struct ClusterVertex {
     bool operator==(const ClusterVertex& other) const = default;
 };
 
+struct PrefixValues {
+    EdgeIx edgeDiff;
+    EdgeIx vol;
+};
+
 struct SweepCut {
     frac_t sparsity;
     NodeIx offset;
-//    std::vector<PrefixValues> pS;
+    std::vector<PrefixValues> pS;
 };
 
 class Partition;
@@ -170,7 +175,7 @@ Partition::Partition(Graph* gr) :
     clusters[0] = {volume, volume, 0, gr->numNodes, this};
 
     std::vector<NodeIx> mod; // a bit ugly
-    consolidate(0, mod);
+    // consolidate(0, mod);
 }
 
 void Partition::consolidate(NodeIx clusterId, std::vector<NodeIx>& modified) {
@@ -313,12 +318,12 @@ SweepCut Partition::sweepCut(NodeIx clusterId, const T& values) {
 
     sortCluster(current, values);
 
-//    std::vector<PrefixValues> prefixes(current.size());
+    std::vector<PrefixValues> prefixes(current.size());
 
     for(const ClusterVertex& cv: current) {
         cutVolume += cv.internalDegree; // graph->degree(cv.nix);
 
-//        prefixes[offset].volume = cutVolume;
+        prefixes[offset].vol = cutVolume;
 
         for(auto it = current.edgeBegin(cv); it != current.edgeEnd(cv); ++it) {
             NodeIx nb = *it;
@@ -335,7 +340,7 @@ SweepCut Partition::sweepCut(NodeIx clusterId, const T& values) {
         cutEdges -= sc_removeAt[cv.nix]; // edge ends at nix, it no longer crosses the cut
         sc_removeAt[cv.nix] = 0;
 
-//        prefixes[offset].edgeDiff = cutEdges;
+        prefixes[offset].edgeDiff = cutEdges;
 //        prefixes[offset].nix = cv.nix;
 
         if(cutVolume == current.internalVolume) break;
@@ -353,7 +358,7 @@ SweepCut Partition::sweepCut(NodeIx clusterId, const T& values) {
 
     for(const ClusterVertex& cv: current) sc_seen[cv.nix] = 0;
 
-    return {bestCut.sparsity, bestCut.offset};
+    return {bestCut.sparsity, bestCut.offset, std::move(prefixes)};
 }
 
 [[nodiscard]] inline std::vector<ClusterVertex>::iterator Cluster::begin() const {
