@@ -102,14 +102,15 @@ class PartitionManager {
 
 
     // CUB Buffers
-    size_t temp_storage_bytes = 0;
-    void *d_temp_storage = nullptr;
+    size_t tempBytesReduce = 0, tempBytesSort = 0;
+    void *tempStorageReduce = nullptr;
+    void *tempStorageSort = nullptr;
 
 public:
     NodeIx totalClusters{1}, numActiveClusters{1};
-    NodeIx numDisabledNodes, numActiveNodes;
+    NodeIx numDisabledNodes{0}, numActiveNodes;
 
-    explicit PartitionManager(GraphManager& gm) :
+    explicit PartitionManager(GraphManager& gm, cub::DoubleBuffer<uint64_t>& keys) :
         numNodes(gm.n),
         totalEdges(2*gm.m),
         partition1(gm.n),
@@ -118,8 +119,8 @@ public:
             thrust::raw_pointer_cast(partition2.data())),
         activeDegrees(gm.n),
         activeVolumes(gm.n, 2 * gm.m),
+        activeLabels(gm.n, 0),
         clusterSums(gm.n),
-        numDisabledNodes{0},
         numActiveNodes{gm.n}
     {
         thrust::transform(
@@ -141,22 +142,31 @@ public:
         );
 
         cub::DeviceSegmentedReduce::Sum(
-                nullptr, temp_storage_bytes,
+                nullptr, tempBytesReduce,
                 input_iter,
                 thrust::raw_pointer_cast(activeDegrees.data()),
                 static_cast<int>(numNodes),
                 rangesPtr,
-                rangesPtr + 1,
-                nullptr
+                rangesPtr + 1
         );
 
-        cudaMalloc(&d_temp_storage, temp_storage_bytes);
+        cudaMalloc(&tempStorageReduce, tempBytesReduce);
+
+        cub::DeviceRadixSort::SortPairs(
+            nullptr, tempBytesSort,
+            keys,
+            partition,
+            static_cast<int>(numNodes)
+        );
+
+        cudaMalloc(&tempStorageSort, tempBytesSort);
+
     }
 
 
     thrust::transform_iterator<LabelExtractor, unsigned long long*> sortByKeys(cub::DoubleBuffer<uint64_t>& keys) {
         cub::DeviceRadixSort::SortPairs(
-            d_temp_storage, temp_storage_bytes,
+            tempStorageSort, tempBytesSort,
             keys,
             partition,
             static_cast<int>(numNodes)
@@ -295,7 +305,7 @@ public:
                 }
 
                 if(sc.sparsity < sc_threshold && data.offsetInCluster > sc.offset) {
-                    printf("Cluster %d is split into two parts -> new label = %d, because maxLabel = %d\n", data.label, data.label + n + 1, n);
+                    // printf("Cluster %d is split into two parts -> new label = %d, because maxLabel = %d\n", data.label, data.label + n + 1, n);
                     data.label += n + 1;
                 }
             }
@@ -393,8 +403,8 @@ public:
         );
 
         cub::DeviceSegmentedReduce::Sum(
-            d_temp_storage,
-            temp_storage_bytes,
+            tempStorageReduce,
+            tempBytesReduce,
             input_iter,
             thrust::raw_pointer_cast(activeDegrees.data()),
             static_cast<int>(numNodes),

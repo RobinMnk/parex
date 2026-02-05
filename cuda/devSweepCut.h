@@ -173,35 +173,33 @@ class SweepCutManager {
     cub::DoubleBuffer<uint64_t> packedKeys;
 
     // CUB Buffers
-    size_t temp_storage_bytes = 0;
-    void *d_temp_storage = nullptr;
+    // size_t temp_storage_bytes = 0;
+    // void *d_temp_storage = nullptr;
 
 
     // Output
     thrust::device_vector<SweepCutData> sweepCuts;
 
-    void initializeCUB(NodeIx n, PartitionManager& pm) {
-        cub::DeviceRadixSort::SortPairs(
-            nullptr, temp_storage_bytes,
-            packedKeys,
-            pm.getPartitionView(),
-            static_cast<int>(n)
-        );
-
-        cudaMalloc(&d_temp_storage, temp_storage_bytes);
-    }
+    // void initializeCUB(NodeIx n, PartitionManager& pm) {
+    //     cub::DeviceRadixSort::SortPairs(
+    //         nullptr, temp_storage_bytes,
+    //         packedKeys,
+    //         pm.getPartitionView(),
+    //         static_cast<int>(n)
+    //     );
+    //
+    //     cudaMalloc(&d_temp_storage, temp_storage_bytes);
+    // }
 
 public:
-    explicit SweepCutManager(NodeIx n, PartitionManager& pm) :
+    explicit SweepCutManager(NodeIx n) :
         numNodes(n),
         packedKeysIn(n),
         packedKeysOut(n),
         packedKeys(thrust::raw_pointer_cast(packedKeysIn.data()),
                    thrust::raw_pointer_cast(packedKeysOut.data())),
         sweepCuts(n)
-    {
-        initializeCUB(n, pm);
-    }
+    { }
 
     thrust::device_vector<SweepCutData>& getSweepCuts() {
         return sweepCuts;
@@ -369,7 +367,7 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
 
     int num = end.second - pm.getVolumes().begin();
 
-    assert(num == pm.numActiveNodes);
+    // assert(num == pm.numActiveClusters);
 
     // std::vector<NodeData> nodes(numNodes);
     // thrust::device_ptr<NodeData> dev_ptr(partition.Current());
@@ -379,14 +377,14 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
     // }
 
 
-    std::vector<EdgeIx> clusterVolumes(num);
-    thrust::copy(pm.getVolumes().begin(), pm.getVolumes().begin() + num, clusterVolumes.begin());
-    std::vector<int> h_labels(num);
-    thrust::copy(pm.getActiveLabels().begin(), pm.getActiveLabels().begin() + num, h_labels.begin());
-    for (int i = 0; i < num; i++) {
-        printf("%d: Cluster: %d, volume: %d\n", i, h_labels[i], clusterVolumes[i]);
-    }
-    fflush(stdout);
+    // std::vector<EdgeIx> clusterVolumes(num);
+    // thrust::copy(pm.getVolumes().begin(), pm.getVolumes().begin() + num, clusterVolumes.begin());
+    // std::vector<int> h_labels(num);
+    // thrust::copy(pm.getActiveLabels().begin(), pm.getActiveLabels().begin() + num, h_labels.begin());
+    // for (int i = 0; i < num; i++) {
+    //     printf("%d: Cluster: %d, volume: %d\n", i, h_labels[i], clusterVolumes[i]);
+    // }
+    // fflush(stdout);
 
 
 

@@ -24,9 +24,9 @@ struct CudaDeviceManager::Impl {
         sc.reset();
 
         gm = std::make_unique<GraphManager>(graph);
-        pt = std::make_unique<PartitionManager>(*gm);
+        sc = std::make_unique<SweepCutManager>(graph.numNodes);
+        pt = std::make_unique<PartitionManager>(*gm, sc->getKeyBuffer());
         rw = std::make_unique<RandomWalkManager>(graph.numNodes);
-        sc = std::make_unique<SweepCutManager>(graph.numNodes, *pt);
     }
 
     void iterateRandomWalk() {
