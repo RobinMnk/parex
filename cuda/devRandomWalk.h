@@ -133,29 +133,17 @@ struct ClusterDataReduceOp {
 
 
 struct WalkEdgeLogic {
-    const NodeIx numNodes;
     const NodeIx* __restrict__ neighbors;
-    // const EdgeIx* __restrict__ edgeMap;
     const EdgeIx* __restrict__ activeDegrees;
     const frac_t* __restrict__ dist;
-    // const NodeData* __restrict__ nodes;
 
     __device__ __forceinline__
     float operator()(EdgeIx edgeIdx) const {
-        // const EdgeIx revEdge = edgeMap[edgeIdx];
-        // const NodeIx srcNode = neighbors[revEdge];
-        //
-        // const NodeIx tgtNode = neighbors[edgeIdx];
-        //
-        // if (__ldg(&nodes[srcNode].label) != __ldg(&nodes[tgtNode].label)) {
-        //     return 0.0f;
-        // }
         const NodeIx tgtNode = __ldg(&neighbors[edgeIdx]);
-        if (tgtNode == numNodes+1000) {
+        if (tgtNode == INVALID_EDGE) {
             // inactive edge
             return 0.0f;
         }
-
 
         const EdgeIx nbDeg = __ldg(&activeDegrees[tgtNode]);
 
@@ -348,7 +336,6 @@ public:
           cub::DoubleBuffer<uint64_t>& packedKeys,
           thrust::device_vector<EdgeIx>& activeDegrees
     ) {
-        const EdgeIx* edgeMapPtr = thrust::raw_pointer_cast(gm.getEdgeMap().data());
         const EdgeIx* rangesPtr = thrust::raw_pointer_cast(gm.getRanges().data());
         const NodeIx* neighborsPtr = thrust::raw_pointer_cast(gm.getNeighbors().data());
         const EdgeIx* activeDegsPtr = thrust::raw_pointer_cast(activeDegrees.data());
@@ -356,7 +343,7 @@ public:
         frac_t* incomingSumsPtr = thrust::raw_pointer_cast(incomingSums.data());
 
         thrust::counting_iterator<EdgeIx> edgeIndexIter(0);
-        WalkEdgeLogic functor{numNodes, neighborsPtr, activeDegsPtr, distPtr};
+        WalkEdgeLogic functor{neighborsPtr, activeDegsPtr, distPtr};
 
         auto transIter = thrust::make_transform_iterator(edgeIndexIter, functor);
 
@@ -364,7 +351,7 @@ public:
         cub::DeviceSegmentedReduce::Sum(
             d_temp_storage, temp_storage_bytes,
             transIter, incomingSumsPtr,
-            numNodes, rangesPtr, rangesPtr + 1
+            static_cast<int>(numNodes), rangesPtr, rangesPtr + 1
         );
 
         // Finalize
@@ -490,7 +477,7 @@ public:
 
 private:
     void prepare_cub() {
-        WalkEdgeLogic dryRunFunctor{numNodes, nullptr, nullptr, nullptr};
+        WalkEdgeLogic dryRunFunctor{nullptr, nullptr, nullptr};
         auto dryRunIter = thrust::make_transform_iterator(thrust::make_counting_iterator<EdgeIx>(0), dryRunFunctor);
 
         EdgeIx* nullOffsets = static_cast<EdgeIx*>(nullptr);

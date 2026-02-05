@@ -83,7 +83,7 @@ void nodeDiffKernel_Sparse(
 
     for (NodeIx j = rangeStart; j < rangeEnd; ++j) {
         const NodeIx neighbor = __ldg(&neighbors[j]);
-        if (neighbor == numNodes+1000) {
+        if (neighbor == INVALID_EDGE) {
             // inactive edge;
             continue;
         }

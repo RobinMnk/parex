@@ -30,12 +30,11 @@ struct InitFunctor {
 };
 
 struct ActiveEdgeLogic {
-    NodeIx numNodes;
     const NodeIx* neighbors;
 
     __device__
     int operator()(EdgeIx edgeIdx) const {
-        return neighbors[edgeIdx] != numNodes+1000 ? 1 : 0;
+        return neighbors[edgeIdx] != INVALID_EDGE ? 1 : 0;
         // EdgeIx revEdge = edgeMap[edgeIdx];
         // NodeIx srcNode = neighbors[revEdge];
         // NodeIx srcLabel = nodes[srcNode].label;
@@ -54,7 +53,6 @@ struct ActiveEdgeLogic {
 
 __global__
 void disableEdgesKernel(
-    NodeIx numNodes,
     EdgeIx totalEdges,
     const NodeData* __restrict__ nodeData,
     const EdgeIx* __restrict__ edgeMap,
@@ -64,7 +62,7 @@ void disableEdgesKernel(
     if (edgeIdx >= totalEdges) return;
 
     NodeIx tgtNode = neighbors[edgeIdx];
-    if (tgtNode == numNodes+1000) {
+    if (tgtNode == INVALID_EDGE) {
         // edge already inactive
         return;
     }
@@ -76,14 +74,14 @@ void disableEdgesKernel(
     NodeIx srcLabel = nodeData[srcNode].label;
 
     assert(edgeMap[revEdge] == edgeIdx);
-    assert(nodes[srcNode].nix == srcNode);
+    assert(nodeData[srcNode].nix == srcNode);
 
 
-    assert(nodes[tgtNode].nix == tgtNode);
+    assert(nodeData[tgtNode].nix == tgtNode);
 
     if (srcLabel != tgtLabel) {
         // inactive edges point to totalEdges
-        neighbors[edgeIdx] = numNodes+1000; // this is an invalid index
+        neighbors[edgeIdx] = INVALID_EDGE;
     }
 }
 
@@ -137,7 +135,7 @@ public:
 
         auto input_iter = thrust::make_transform_iterator(
                 thrust::make_counting_iterator(0),
-                ActiveEdgeLogic{numNodes, neighbors}
+                ActiveEdgeLogic{neighbors}
         );
 
         cub::DeviceSegmentedReduce::Sum(
@@ -160,7 +158,6 @@ public:
         int gridSize = (totalEdges + threads - 1) / threads;
 
         disableEdgesKernel<<<gridSize, threads, 0, nullptr>>>(
-            numNodes,
             totalEdges,
             partition.Current(),
             edgeMapPtr,
@@ -182,7 +179,7 @@ public:
             input_iter,
             input_iter + numNodes,
             d_aem.begin(),
-            ActiveEdgeLogic{numNodes, neighbors}
+            ActiveEdgeLogic{neighbors}
         );
 
         thrust::copy(d_aem.begin(), d_aem.end(), aem.begin());
@@ -241,7 +238,7 @@ public:
 
         auto input_iter = thrust::make_transform_iterator(
                 thrust::make_counting_iterator(0),
-                ActiveEdgeLogic{numNodes, neighborsPtr}
+                ActiveEdgeLogic{neighborsPtr}
         );
 
         cub::DeviceSegmentedReduce::Sum(
