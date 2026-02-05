@@ -79,7 +79,7 @@ class ExpanderHierarchy {
         }
 
         return {
-            Graph(std::move(edges), std::move(range), part.numClusters(), part.getNumCutEdges()),
+            Graph(), // TODO: add map: std::move(edges), std::move(range), part.numClusters(), part.getNumCutEdges()),
             std::move(part),
             std::move(volumes),
             std::move(cutSizes),

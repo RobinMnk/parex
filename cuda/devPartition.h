@@ -149,8 +149,6 @@ public:
                 const int clusterId = data.label;
                 if (clusterId < 0) return; // this cluster is inactive
 
-                // TODO: This makes no sense!! The clusterId is not the same as the index!!!
-
                 const int* it = thrust::lower_bound(
                     thrust::seq,
                     uniqueLabelsPtr,

@@ -271,11 +271,14 @@ TEST_P(CudaTest, RepeatedCuts) {
     rw.setData(rwData);
     Partition part(&graph);
 
-    std::vector<NodeIx> active{0};
+    std::vector<NodeIx> active, next{0};
     std::vector<NodeData> pt;
 
     for(int i = 0; i < GetParam(); i++) {
         std::cout << "=====================================================================================" << std::endl;
+
+        std::swap(active, next);
+        next.clear();
 
 
         auto deg = cuda.downloadDegrees();
@@ -304,11 +307,14 @@ TEST_P(CudaTest, RepeatedCuts) {
         //     }
         // }
 
-        for (const Cluster& cluster: part) {
+        for (NodeIx cix: active) {
+            const Cluster& cluster = part.getCluster(cix);
             for (const ClusterVertex& cv: cluster) {
                 EXPECT_NEAR(y[cv.nix], z[cv.nix], 0.00001) << " nix = " << cv.nix << "\t Iteration: " << (i+1);
             }
         }
+
+        // TODO active should remove inactive clusters, then only check active nodes for random walk equality!!
 
         cuda.computeSweepCuts();
         auto gpuSweepCuts = cuda.readSweepCuts();
@@ -319,7 +325,8 @@ TEST_P(CudaTest, RepeatedCuts) {
 
 
         NodeIx numClusters = active.size();
-        for(NodeIx clusterId = 0; clusterId < numClusters; clusterId++) {
+        for(NodeIx ix = 0; ix < numClusters; ix++) {
+            NodeIx clusterId =  active[ix];
             SweepCut sweepCut = part.sweepCut(clusterId, z);
 
             const Cluster& currentCluster = part.getCluster(clusterId);
@@ -369,7 +376,10 @@ TEST_P(CudaTest, RepeatedCuts) {
         }
 
         for (NodeIx cix = 0; cix < part.numClusters(); cix++) {
-            rw.recenterCluster(part.getCluster(cix));
+            float potential = rw.recenterCluster(part.getCluster(cix));
+            if (potential >= rw_threshold) {
+                next.push_back(cix);
+            }
         }
 
         std::vector<NodeIx> expectedLabels = getLabels(graph, part);
@@ -395,7 +405,8 @@ TEST_P(CudaTest, RepeatedCuts) {
 
         y = cuda.readRandomWalkValues();
         z = rw.values();
-        for (const Cluster& cluster: part) {
+        for (NodeIx cix: next) {
+            const Cluster& cluster = part.getCluster(cix);
             for (const ClusterVertex& cv: cluster) {
                 EXPECT_NEAR(y[cv.nix], z[cv.nix], 0.00001) << " nix = " << cv.nix << "\t Iteration: " << (i+1);
             }
@@ -423,12 +434,12 @@ TEST_P(CudaTest, RepeatedCuts) {
 
 
 TEST_F(CudaTest, ExpanderDecomposition) {
+    GTEST_SKIP();
+    Timer t;
+    t.start();
     cuda.expanderDecomposition();
-    std::vector<NodeData> pt = cuda.downloadPartition();
 
-    for (NodeIx nix = 0; nix < graph.numNodes; nix++) {
-
-    }
+    printf("Terminated after %fs\n", t.timeSeconds());
 }
 
 

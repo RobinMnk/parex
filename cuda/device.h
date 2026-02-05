@@ -9,6 +9,7 @@
 #include "devRandomWalk.h"
 #include "devSweepCut.h"
 #include "devPartition.h"
+#include "timer.h"
 
 struct CudaDeviceManager::Impl {
     std::unique_ptr<GraphManager> gm;
@@ -186,31 +187,40 @@ void CudaDeviceManager::Impl::printInf(
 
 
 void CudaDeviceManager::Impl::expanderDecomposition() {
-    std::vector<int> labels(gm->n);
-    std::vector<ClusterData> clusters(gm->n);
-    std::vector<EdgeIx> degs(gm->n);
-    std::vector<SweepCutData> scs(gm->n);
-    std::vector<NodeData> nodes(gm->n);
+    // std::vector<int> labels(gm->n);
+    // std::vector<ClusterData> clusters(gm->n);
+    // std::vector<EdgeIx> degs(gm->n);
+    // std::vector<SweepCutData> scs(gm->n);
+    // std::vector<NodeData> nodes(gm->n);
 
-    int maxIt = 20;
+    int i = 0;
 
-    while (maxIt-- > 0 && labels[sc->getNumActiveClusters() - 1] >= 0) {
-
-        printf("====================================================================================\n");
+    Timer t;
+    t.start();
+    while (i++ < 2000 && rw->getMaxLabel() >= 0) {
+        // printf("==================================================================================== It: %d\n", (i+1));
 
         iterateRandomWalk();
         computeSweepCuts();
-
-        // printf("Before cutting\n");
-        // printInf(labels, clusters, degs, scs, nodes);
-
         cutClusters();
+    }
+
+    auto tm = t.timeSeconds();
+    printf("%d iterations with %fs per iteration\n", i, (float) tm / i);
+
+
+    // printf("Before cutting\n");
+    // printInf(labels, clusters, degs, scs, nodes);
 
         // printf("After cutting\n");
-        printInf(labels, clusters, degs, scs, nodes);
+        // printInf(labels, clusters, degs, scs, nodes);
 
 
 
+        // auto& x = sc->getLabels();
+        // thrust::copy(x.begin(), x.end(), labels.begin());
+        // for (int y = 0; y < sc->getNumActiveClusters(); y++) std::cout << labels[y] << ", ";
+        // std::cout << std::endl;
 
         // for (auto j = 0; j < gm->n; j++) {
         //     std::cout << "(" << nodes[j].nix << ", " << nodes[j].label  << ", " << nodes[j].activeDegree << "), ";
@@ -229,7 +239,7 @@ void CudaDeviceManager::Impl::expanderDecomposition() {
         //
         // pt->computeActiveDegrees(*gm);
 
-    }
+    // }
 }
 
 

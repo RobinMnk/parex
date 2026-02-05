@@ -64,7 +64,10 @@ void lazyRandomWalkKernel(
 
     // early exit for inactive nodes
     const NodeData data = nodeData[i];
-    // if(data.label < 0) return; // label < 0 considered inactive
+    if(data.label < 0) {
+        packedKeys[i] = packKey(data.label, 0);
+        return;
+    }; // label < 0 considered inactive
 
     assert(data.nix == i && "nix mismatch!");
 
@@ -183,7 +186,7 @@ public:
 
         thrust::copy_n(uniqueLabels.begin() + numUnique - 1, 1, &maxLabel);
 
-        printf("There are %d clusters and the maximum label is %d\n", numUnique, maxLabel);
+        // printf("There are %d clusters and the maximum label is %d\n", numUnique, maxLabel);
 
         return numUnique;
     }
@@ -238,33 +241,33 @@ public:
                 );
                 int correspondingSweepCutIndex = static_cast<int>(it - uniqueLabelsPtr);
 
-                // TODO: HERE
-                data.label = correspondingSweepCutIndex;
-
                 if (uniqueLabelsPtr[correspondingSweepCutIndex] != label) {
                     printf("ERROR: label mismatch!! For nix = %d:\t%d != %d\n", data.nix, label, uniqueLabelsPtr[correspondingSweepCutIndex]);
                 }
 
                 const ClusterData cd = clusterDataPtr[correspondingSweepCutIndex];
 
-                if (cd.totalElements < 2) {
-                    // printf("node %d with label %d returns because numElements = %d. Note that totalClusters = %d\n", data.nix, label, cd.totalElements, numUnique);
-                    return;
-                };
+                // if (cd.totalElements < 2) {
+                //     // printf("node %d with label %d returns because numElements = %d. Note that totalClusters = %d\n", data.nix, label, cd.totalElements, numUnique);
+                //     return;
+                // };
 
-            const float rw = distPtr[data.nix];
+                const float clusterPotential = cd.maxPotential - cd.minPotential;
 
-                // const float clusterPotential = cd.maxPotential - cd.minPotential;
+                if (clusterPotential < rw_threshold || cd.totalElements < 2) {
+                    // this cluster should be deactivated
+                    int smallestLabel = uniqueLabelsPtr[0];
+                    // printf("Deactivating cluster: %d -> %d \t smallest: %d\n", label, smallestLabel - data.label - 1, smallestLabel);
+                    data.label = smallestLabel - data.label - 1;
+                } else {
+                    data.label = correspondingSweepCutIndex;
 
-                // if (clusterPotential < rw_threshold) {
-                //     // this cluster should be deactivated
-                //     // printf("Deactivating cluster: %d -> %d\n", label, -label-1);
-                //     data.label = -label - 1;
-                // } else {
                     const float average = cd.rwSum / static_cast<double>(cd.totalElements);
                     distPtr[data.nix] -= average; // TODO: write this diff to any unused field within NodeData! (save random write)
                     data.rwValue -= average; // TODO: this line is just for debugging
-                // }
+                }
+
+                // printf("moved node %d from cluster %d to cluster %d\n", data.nix, label, data.label);
 
                 // printf("node %d with label %d, old rwValue = %f and offset = %d loaded this cluster data (%d): [average = %f, potential = %f, numElements = %d]\n", data.nix, label, rw, data.offsetInCluster, correspondingSweepCutIndex, average, cd.maxPotential - cd.minPotential, cd.totalElements);
 
@@ -272,7 +275,8 @@ public:
         );
 
         // printf("After\n");
-        // computeClusterData(partition, uniqueLabels);
+        // int x = computeClusterData(partition, uniqueLabels);
+        // // assert(x-1 == maxLabel);
         // print(numUnique, uniqueLabels);
         // printf("\n");
 

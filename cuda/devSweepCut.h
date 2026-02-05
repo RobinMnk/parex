@@ -73,7 +73,7 @@ void nodeDiffKernel_Sparse(
 
     assert(data.nix == i && "nix mismatch!");
 
-    // if (data.label < 0) return;
+    if (data.label < 0) return;
 
     const frac_t myVal = __ldg(&values[i]);
 
@@ -244,7 +244,11 @@ struct ReduceOp {
         int correspondingIndex = static_cast<int>(it - labelsPtr);
 
         if (labelsPtr[correspondingIndex] != nodeData.label) {
-            printf("ERROR: Label-data mismatch!!\n");
+            // for (int i = 0; i < numClusters; ++i) {
+            //     printf("%d: cluster label: %d\n", i, labelsPtr[correspondingIndex]);
+            // }
+
+            printf("ERROR: Label-data mismatch!!\tlabelsPtr[correspondingIndex] = %d, correspondingIndex=%d, nodeData.label = %d, nix=%d\n", labelsPtr[correspondingIndex], correspondingIndex, nodeData.label, nodeData.nix);
         }
 
         const EdgeIx totalVol  = clusterVolumesPtr[correspondingIndex];
@@ -256,9 +260,9 @@ struct ReduceOp {
         const EdgeIx denom = (prefixVol < totalVol - prefixVol) ? prefixVol : (totalVol - prefixVol);
         const float sparsity  = (denom > 0) ? (static_cast<float>(edgeDiff) / static_cast<float>(denom)) : 2.0f;
 
-        if (nodeData.label == 316) {
-            printf("Node %d has label %d at offset %d rwValue = %f, prefixSum = %d and prefixVol = %d -> sparsity: %f, denom = %d\n", nodeData.nix, nodeData.label, nodeData.offsetInCluster, nodeData.rwValue, nodeData.prefixEdgeDiff, nodeData.prefixVolume, sparsity, denom);
-        }
+        // if (nodeData.label == 316) {
+        //     printf("Node %d has label %d at offset %d rwValue = %f, prefixSum = %d and prefixVol = %d -> sparsity: %f, denom = %d\n", nodeData.nix, nodeData.label, nodeData.offsetInCluster, nodeData.rwValue, nodeData.prefixEdgeDiff, nodeData.prefixVolume, sparsity, denom);
+        // }
 
 
         return { nodeData.label, sparsity , nodeData.offsetInCluster };
@@ -350,14 +354,14 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
     // for (NodeIx i = 0; i < numNodes; i++) {
     //     printf("Node %d has label %d at offset %d, prefixSum = %d and prefixVol = %d\n", nodes[i].nix, nodes[i].label, nodes[i].offsetInCluster, nodes[i].prefixEdgeDiff, nodes[i].prefixVolume);
     // }
-    //
-    //
+
+
     // std::vector<EdgeIx> clusterVolumes(num);
     // thrust::copy(pm.getVolumes().begin(), pm.getVolumes().begin() + num, clusterVolumes.begin());
-    // std::vector<EdgeIx> h_labels(num);
+    // std::vector<int> h_labels(num);
     // thrust::copy(d_unique_labels.begin(), d_unique_labels.begin() + num, h_labels.begin());
     // for (int i = 0; i < num; i++) {
-    //     printf("Cluster: %d, volume: %d\n", h_labels[i], clusterVolumes[i]);
+    //     printf("%d: Cluster: %d, volume: %d\n", i, h_labels[i], clusterVolumes[i]);
     // }
 
 
@@ -383,8 +387,8 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
     assert(numActiveClusters  == num);
 
 
-    std::vector<SweepCutData> scs(numActiveClusters);
-    thrust::copy(sweepCuts.begin(), sweepCuts.begin() + numActiveClusters, scs.begin());
+    // std::vector<SweepCutData> scs(numActiveClusters);
+    // thrust::copy(sweepCuts.begin(), sweepCuts.begin() + numActiveClusters, scs.begin());
 
     // printf("Computed these sweep cuts:\n");
     // for (auto sc : scs) {
