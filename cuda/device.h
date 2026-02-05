@@ -30,7 +30,7 @@ struct CudaDeviceManager::Impl {
     }
 
     void iterateRandomWalk() {
-        rw->step(*gm, pt->getPartitionView(), sc->getKeyBuffer(), pt->getActiveDegrees());
+        rw->stepFast(*gm, pt->getPartitionView(), sc->getKeyBuffer(), pt->getActiveDegrees());
     }
 
     std::vector<frac_t> readRandomWalkValues() {

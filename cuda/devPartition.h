@@ -33,7 +33,6 @@ struct ActiveEdgeLogic {
     const NodeData* nodes;
     const NodeIx* neighbors;
     const EdgeIx* edgeMap;
-    NodeIx numNodes;
 
     __device__
     int operator()(EdgeIx edgeIdx) const {
@@ -99,7 +98,7 @@ public:
 
         auto input_iter = thrust::make_transform_iterator(
                 thrust::make_counting_iterator(0),
-                ActiveEdgeLogic{partition.Current(), neighbors, edgeMapPtr, gm.n}
+                ActiveEdgeLogic{partition.Current(), neighbors, edgeMapPtr}
         );
 
         cub::DeviceSegmentedReduce::Sum(
@@ -129,7 +128,7 @@ public:
             input_iter,
             input_iter + numNodes,
             d_aem.begin(),
-            ActiveEdgeLogic{partition.Current(), neighbors, edgeMapPtr, gm.n}
+            ActiveEdgeLogic{partition.Current(), neighbors, edgeMapPtr}
         );
 
         thrust::copy(d_aem.begin(), d_aem.end(), aem.begin());
@@ -158,22 +157,9 @@ public:
 
                 int correspondingSweepCutIndex = static_cast<int>(it - uniqueLabelsPtr);
 
-
-                const int *alt = nullptr;
-                for (const int* x = uniqueLabelsPtr; x < uniqueLabelsPtr + numClusters; x++) {
-                    if (*x == clusterId) {
-                        alt = x;
-                    }
-                }
-                if (alt != it) {
-                    printf("binary search failed!\n");
-                }
-
-
                 if (clusterId != uniqueLabelsPtr[correspondingSweepCutIndex]) {
                     printf("ERRORRR!!!! clusterId does not match unique label! (clusterId = %d != %d = index\n", clusterId, correspondingSweepCutIndex);
                 }
-
 
                 SweepCutData sc = sweepCutPtr[correspondingSweepCutIndex];
 
@@ -202,7 +188,7 @@ public:
 
         auto input_iter = thrust::make_transform_iterator(
                 thrust::make_counting_iterator(0),
-                ActiveEdgeLogic{partition.Current(), neighborsPtr, edgeMapPtr, gm.n}
+                ActiveEdgeLogic{partition.Current(), neighborsPtr, edgeMapPtr}
         );
 
         cub::DeviceSegmentedReduce::Sum(

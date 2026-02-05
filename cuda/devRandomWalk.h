@@ -48,52 +48,52 @@ inline uint64_t packKey(int label, float v) {
     return (static_cast<uint64_t>(orderedLabel) << 32) | ordered;
 }
 
-__global__
-void lazyRandomWalkKernel(
-        NodeIx numNodes,
-        const NodeIx* __restrict__ neighbors,
-        const EdgeIx* __restrict__ ranges,
-        NodeData* __restrict__ nodeData,
-        const EdgeIx* __restrict__ activeDegrees,
-        const frac_t* __restrict__ old_dist,
-        frac_t* __restrict__ dist,
-        uint64_t* __restrict__ packedKeys
-) {
-    NodeIx i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= numNodes) return;
-
-    // early exit for inactive nodes
-    const NodeData data = nodeData[i];
-    if(data.label < 0) {
-        packedKeys[i] = packKey(data.label, 0);
-        return;
-    }; // label < 0 considered inactive
-
-    assert(data.nix == i && "nix mismatch!");
-
-    frac_t incoming_sum = 0.0f;
-    const EdgeIx rangeStart = ranges[i];
-    const EdgeIx rangeEnd = ranges[i] + data.degree;
-
-    for (NodeIx j = rangeStart; j < rangeEnd; ++j) {
-        const NodeIx neighbor = __ldg(&neighbors[j]);
-        const NodeData nbData = nodeData[neighbor];
-        const EdgeIx nbDeg = __ldg(&activeDegrees[neighbor]);
-
-        if(nbData.label == data.label && nbDeg != 0) {
-            incoming_sum += (__ldg(&old_dist[neighbor]) / static_cast<frac_t>(nbDeg));
-        }
-    }
-
-    const frac_t nodeVal = (incoming_sum * (1.0f - rw_stay)) + (old_dist[i] * rw_stay);
-
-    dist[i] = nodeVal;
-    nodeData[i].activeDegree = activeDegrees[i];
-
-    // FOR SWEEP CUT:
-    // Already Pack label and rw value into packedKeys for sorting!!
-    packedKeys[i] = packKey(data.label, nodeVal);
-}
+// __global__
+// void lazyRandomWalkKernel(
+//         NodeIx numNodes,
+//         const NodeIx* __restrict__ neighbors,
+//         const EdgeIx* __restrict__ ranges,
+//         NodeData* __restrict__ nodeData,
+//         const EdgeIx* __restrict__ activeDegrees,
+//         const frac_t* __restrict__ old_dist,
+//         frac_t* __restrict__ dist,
+//         uint64_t* __restrict__ packedKeys
+// ) {
+//     NodeIx i = blockIdx.x * blockDim.x + threadIdx.x;
+//     if (i >= numNodes) return;
+//
+//     // early exit for inactive nodes
+//     const NodeData data = nodeData[i];
+//     if(data.label < 0) {
+//         packedKeys[i] = packKey(data.label, 0);
+//         return;
+//     }; // label < 0 considered inactive
+//
+//     assert(data.nix == i && "nix mismatch!");
+//
+//     frac_t incoming_sum = 0.0f;
+//     const EdgeIx rangeStart = ranges[i];
+//     const EdgeIx rangeEnd = ranges[i] + data.degree;
+//
+//     for (NodeIx j = rangeStart; j < rangeEnd; ++j) {
+//         const NodeIx neighbor = __ldg(&neighbors[j]);
+//         const NodeData nbData = nodeData[neighbor];
+//         const EdgeIx nbDeg = __ldg(&activeDegrees[neighbor]);
+//
+//         if(nbData.label == data.label && nbDeg != 0) {
+//             incoming_sum += (__ldg(&old_dist[neighbor]) / static_cast<frac_t>(nbDeg));
+//         }
+//     }
+//
+//     const frac_t nodeVal = (incoming_sum * (1.0f - rw_stay)) + (old_dist[i] * rw_stay);
+//
+//     dist[i] = nodeVal;
+//     nodeData[i].activeDegree = activeDegrees[i];
+//
+//     // FOR SWEEP CUT:
+//     // Already Pack label and rw value into packedKeys for sorting!!
+//     packedKeys[i] = packKey(data.label, nodeVal);
+// }
 
 
 struct LabelExtractorRW {
@@ -132,10 +132,63 @@ struct ClusterDataReduceOp {
 };
 
 
+struct WalkEdgeLogic {
+    const NodeIx* __restrict__ neighbors;
+    const EdgeIx* __restrict__ edgeMap;
+    const EdgeIx* __restrict__ activeDegrees;
+    const frac_t* __restrict__ dist;
+    const NodeData* __restrict__ nodes;
+
+    __device__ __forceinline__
+    float operator()(EdgeIx edgeIdx) const {
+        const EdgeIx revEdge = edgeMap[edgeIdx];
+        const NodeIx srcNode = neighbors[revEdge];
+
+        const NodeIx tgtNode = neighbors[edgeIdx];
+
+        if (__ldg(&nodes[srcNode].label) != __ldg(&nodes[tgtNode].label)) {
+            return 0.0f;
+        }
+
+        const EdgeIx nbDeg = __ldg(&activeDegrees[tgtNode]);
+
+        if (nbDeg > 0) {
+            return __ldg(&dist[tgtNode]) / static_cast<float>(nbDeg);
+        }
+        return 0.0f;
+    }
+};
+
+__global__
+void finalizeRandomWalk(
+    NodeIx numNodes,
+    const EdgeIx* __restrict__ activeDegrees,
+    const frac_t* __restrict__ incoming_sums,
+    frac_t* __restrict__ dist,
+    NodeData* __restrict__ nodeData,
+    uint64_t* __restrict__ packedKeys
+) {
+    NodeIx i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= numNodes) return;
+
+    const NodeData data = nodeData[i];
+    if (data.label < 0) {
+        packedKeys[i] = packKey(data.label, 0);
+        return;
+    }
+
+    const frac_t nodeVal = (incoming_sums[i] * (1.0f - rw_stay)) + (dist[i] * rw_stay);
+
+    dist[i] = nodeVal;
+    nodeData[i].activeDegree = activeDegrees[i];
+    packedKeys[i] = packKey(data.label, nodeVal);
+}
+
+
+
 class RandomWalkManager {
     thrust::device_vector<frac_t> dist;
-    thrust::device_vector<frac_t> old_dist;
-    thrust::device_vector<frac_t> node_val;
+    thrust::device_vector<frac_t> incomingSums;
 
     thrust::device_vector<ClusterData> clusterSums;
 
@@ -145,9 +198,9 @@ class RandomWalkManager {
     int maxLabel{0};
 
 public:
-    explicit RandomWalkManager(NodeIx n) : dist(n), old_dist(n), node_val(n), clusterSums(n), numNodes(n) {
+    explicit RandomWalkManager(NodeIx n) : dist(n), incomingSums(n), clusterSums(n), numNodes(n) {
         initRandomWalk(seed);
-//        prepare_cub(gr, static_cast<int>(n));
+        prepare_cub();
     }
 
     ~RandomWalkManager() {
@@ -283,36 +336,73 @@ public:
         return numUnique;
     }
 
-
-
-    void step(GraphManager& gm,
+    void stepFast(GraphManager& gm,
           cub::DoubleBuffer<NodeData>& partition,
           cub::DoubleBuffer<uint64_t>& packedKeys,
-          thrust::device_vector<EdgeIx>& activeDegrees,
-          cudaStream_t stream = nullptr
+          thrust::device_vector<EdgeIx>& activeDegrees
     ) {
+        const EdgeIx* edgeMapPtr = thrust::raw_pointer_cast(gm.getEdgeMap().data());
+        const EdgeIx* rangesPtr = thrust::raw_pointer_cast(gm.getRanges().data());
+        const NodeIx* neighborsPtr = thrust::raw_pointer_cast(gm.getNeighbors().data());
+        const EdgeIx* activeDegsPtr = thrust::raw_pointer_cast(activeDegrees.data());
+        frac_t* distPtr = thrust::raw_pointer_cast(dist.data());
+        frac_t* incomingSumsPtr = thrust::raw_pointer_cast(incomingSums.data());
 
-        // BEFORE:
+        thrust::counting_iterator<EdgeIx> edgeIndexIter(0);
+        WalkEdgeLogic functor{neighborsPtr, edgeMapPtr, activeDegsPtr, distPtr, partition.Current()};
 
-        // recenter clusters -> find potential -> deactivate if necessary!!
+        auto transIter = thrust::make_transform_iterator(edgeIndexIter, functor);
 
-        old_dist.swap(dist);
+        // perform the reduction
+        cub::DeviceSegmentedReduce::Sum(
+            d_temp_storage, temp_storage_bytes,
+            transIter, incomingSumsPtr,
+            numNodes, rangesPtr, rangesPtr + 1
+        );
 
-        unsigned int blocksPerGrid = (numNodes + threads - 1) / threads;
+        // Finalize
+        int gridSize = (numNodes + threads - 1) / threads;
 
-        lazyRandomWalkKernel<<<blocksPerGrid, threads, 0, stream>>>(
-                numNodes,
-                thrust::raw_pointer_cast(gm.getNeighbors().data()),
-                thrust::raw_pointer_cast(gm.getRanges().data()),
-                partition.Current(),
-                thrust::raw_pointer_cast(activeDegrees.data()),
-                thrust::raw_pointer_cast(old_dist.data()),
-                thrust::raw_pointer_cast(dist.data()),
-                packedKeys.Current()
+        finalizeRandomWalk<<<gridSize, threads, 0, nullptr>>>(
+            numNodes,
+            activeDegsPtr,
+            incomingSumsPtr,
+            distPtr,
+            partition.Current(),
+            packedKeys.Current()
         );
     }
 
-    int getMaxLabel() {
+
+
+    // void step(GraphManager& gm,
+    //       cub::DoubleBuffer<NodeData>& partition,
+    //       cub::DoubleBuffer<uint64_t>& packedKeys,
+    //       thrust::device_vector<EdgeIx>& activeDegrees,
+    //       cudaStream_t stream = nullptr
+    // ) {
+    //
+    //     // BEFORE:
+    //
+    //     // recenter clusters -> find potential -> deactivate if necessary!!
+    //
+    //     old_dist.swap(dist);
+    //
+    //     unsigned int blocksPerGrid = (numNodes + threads - 1) / threads;
+    //
+    //     lazyRandomWalkKernel<<<blocksPerGrid, threads, 0, stream>>>(
+    //             numNodes,
+    //             thrust::raw_pointer_cast(gm.getNeighbors().data()),
+    //             thrust::raw_pointer_cast(gm.getRanges().data()),
+    //             partition.Current(),
+    //             thrust::raw_pointer_cast(activeDegrees.data()),
+    //             thrust::raw_pointer_cast(old_dist.data()),
+    //             thrust::raw_pointer_cast(dist.data()),
+    //             packedKeys.Current()
+    //     );
+    // }
+
+    int getMaxLabel() const {
         return maxLabel;
     }
 
@@ -392,30 +482,26 @@ public:
     }
 
 private:
-//    void prepare_cub(DevGraph gr, int n) {
-//        frac_t* raw_node_vals = thrust::raw_pointer_cast(node_val.data());
-//        frac_t* raw_dist_out = thrust::raw_pointer_cast(dist.data());
-//
-//        thrust::permutation_iterator<frac_t*, const NodeIx*> v_mapped_iter = thrust::make_permutation_iterator(raw_node_vals, gr.neighbors);
-//
-//        cudaError_t err = cub::DeviceSegmentedReduce::Sum(
-//                nullptr,
-//                temp_storage_bytes,
-//                v_mapped_iter,
-//                raw_dist_out,
-//                n,
-//                gr.ranges,
-//                gr.ranges + 1
-//        );
-//
-//        if (err != cudaSuccess) {
-//            printf("CUB Error: %s\n", cudaGetErrorString(err));
-//        }
-//
-//        std::cout << "allocating " << temp_storage_bytes << "B for storage" << std::endl;
-//
-//        cudaMalloc(&d_temp_storage, temp_storage_bytes);
-//    }
+    void prepare_cub() {
+        WalkEdgeLogic dryRunFunctor{nullptr, nullptr, nullptr, nullptr, nullptr};
+        auto dryRunIter = thrust::make_transform_iterator(thrust::make_counting_iterator<EdgeIx>(0), dryRunFunctor);
+
+        EdgeIx* nullOffsets = static_cast<EdgeIx*>(nullptr);
+        frac_t* nullOutput  = static_cast<frac_t*>(nullptr);
+
+        // Dry run to get temp_storage_bytes
+        cudaError_t err = cub::DeviceSegmentedReduce::Sum(
+            nullptr, temp_storage_bytes,
+            dryRunIter, nullOutput,
+            numNodes, nullOffsets, nullOffsets
+        );
+
+        if (err != cudaSuccess) {
+            printf("CUB Error: %s\n", cudaGetErrorString(err));
+        }
+
+        cudaMalloc(&d_temp_storage, temp_storage_bytes);
+    }
 
     void initRandomWalk(unsigned int s) {
         thrust::transform(thrust::make_counting_iterator<NodeIx>(0),
