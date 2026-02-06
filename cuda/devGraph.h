@@ -5,12 +5,14 @@
 #ifndef PAREX_DEVGRAPH_H
 #define PAREX_DEVGRAPH_H
 
+#include <thrust/binary_search.h>
 #include <thrust/device_vector.h>
 #include <thrust/sort.h>
 #include <thrust/reduce.h>
 #include <thrust/fill.h>
 #include <thrust/scatter.h>
 
+#include "graph.h"
 #include "types.h"
 
 //struct DevGraph {
@@ -85,14 +87,33 @@
 class GraphManager {
     // Graph
     thrust::device_vector<NodeIx> neighbors;
-    const thrust::device_vector<EdgeIx> edgeMap;
     const thrust::device_vector<EdgeIx> ranges;
+
+    thrust::device_vector<NodeIx> nodeLookup;
 
     // Update buffers
 //    thrust::device_vector<EdgeIx> edgeDeletionBuffer;
 //    thrust::device_vector<NodeUpdate> nodeUpdateBuffer;
-
 //    void updateVolumes();
+
+    void populateNodeLookup(NodeIx numNodes, EdgeIx totalEdges) {
+        thrust::upper_bound(
+            thrust::device,
+            ranges.begin(),
+            ranges.begin() + numNodes + 1,
+            thrust::make_counting_iterator(static_cast<EdgeIx>(0)),
+            thrust::make_counting_iterator(totalEdges),
+            nodeLookup.begin()
+        );
+
+        thrust::transform(
+            thrust::device,
+            nodeLookup.begin(),
+            nodeLookup.end(),
+            nodeLookup.begin(),
+            thrust::placeholders::_1 - 1
+        );
+    }
 
 public:
     NodeIx n{0};
@@ -102,19 +123,20 @@ public:
 
     explicit GraphManager(const Graph& graph) :
         neighbors(graph.edges),
-        edgeMap(graph.map),
         ranges(graph.ranges),
+        nodeLookup(2*graph.numEdges),
         n(graph.numNodes),
         m(graph.numEdges)
-//        edgeDeletionBuffer(2 * graph.numEdges),
-//        nodeUpdateBuffer(graph.numNodes)
+    //        edgeDeletionBuffer(2 * graph.numEdges),
+    //        nodeUpdateBuffer(graph.numNodes)
     {
-//        thrust::transform(ranges.begin() + 1, ranges.end(), ranges.begin(), active_degrees.begin(), thrust::minus<int>());
+        //        thrust::transform(ranges.begin() + 1, ranges.end(), ranges.begin(), active_degrees.begin(), thrust::minus<int>());
 
+        populateNodeLookup(graph.numNodes, 2 * graph.numEdges);
         std::cout << "Copied Graph to GPU. \t" << neighbors.size() / 2 << " edges copied" << std::endl;
     }
 
-//    [[nodiscard]] DevGraph getView() const {
+    //    [[nodiscard]] DevGraph getView() const {
 //        return DevGraph{
 //            n, m,
 //            thrust::raw_pointer_cast(neighbors.data()),
@@ -134,8 +156,8 @@ public:
         return neighbors;
     }
 
-    const thrust::device_vector<EdgeIx>& getEdgeMap() const {
-        return edgeMap;
+    const thrust::device_vector<NodeIx> & getNodeLookup() const {
+        return nodeLookup;
     }
 
 //    thrust::device_vector<EdgeIx>& getActiveDegrees() {
@@ -156,7 +178,7 @@ public:
         Graph g(n, m);
         thrust::copy(neighbors.begin(), neighbors.end(), g.edges.begin());
         thrust::copy(ranges.begin(), ranges.end(), g.ranges.begin());
-        thrust::copy(edgeMap.begin(), edgeMap.end(), g.map.begin());
+        // thrust::copy(edgeMap.begin(), edgeMap.end(), g.map.begin());
         return g;
     }
 

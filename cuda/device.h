@@ -5,6 +5,7 @@
 #ifndef PAREX_GRAPH_MANAGER_CU
 #define PAREX_GRAPH_MANAGER_CU
 
+#include "devConsolidate.h"
 #include "interface.h"
 #include "devRandomWalk.h"
 #include "devSweepCut.h"
@@ -16,17 +17,20 @@ struct CudaDeviceManager::Impl {
     std::unique_ptr<PartitionManager> pt;
     std::unique_ptr<RandomWalkManager> rw;
     std::unique_ptr<SweepCutManager> sc;
+    std::unique_ptr<ConsolidationManager> cm;
 
     void initialize(const Graph& graph) {
         gm.reset();
         pt.reset();
         rw.reset();
         sc.reset();
+        cm.reset();
 
         gm = std::make_unique<GraphManager>(graph);
         sc = std::make_unique<SweepCutManager>(graph.numNodes);
         pt = std::make_unique<PartitionManager>(*gm, sc->getKeyBuffer());
         rw = std::make_unique<RandomWalkManager>(graph.numNodes);
+        cm = std::make_unique<ConsolidationManager>(graph.numNodes);
     }
 
     void iterateRandomWalk() {

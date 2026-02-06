@@ -43,7 +43,7 @@ __global__
 void disableEdgesKernel(
     EdgeIx totalEdges,
     const NodeData* __restrict__ nodeData,
-    const EdgeIx* __restrict__ edgeMap,
+    const NodeIx* __restrict__ nodeLookup,
     NodeIx* __restrict__ neighbors
 ) {
     EdgeIx edgeIdx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -57,8 +57,7 @@ void disableEdgesKernel(
 
     NodeIx tgtLabel = __ldg(&nodeData[tgtNode].label);
 
-    EdgeIx revEdge = edgeMap[edgeIdx];
-    NodeIx srcNode = neighbors[revEdge];
+    NodeIx srcNode = nodeLookup[edgeIdx];
 
     if (srcNode == INVALID_EDGE) {
         neighbors[edgeIdx] = INVALID_EDGE;
@@ -67,7 +66,7 @@ void disableEdgesKernel(
 
     NodeIx srcLabel = nodeData[srcNode].label;
 
-    assert(edgeMap[revEdge] == edgeIdx);
+    // assert(edgeMap[revEdge] == edgeIdx);
     assert(nodeData[srcNode].nix == srcNode);
     assert(nodeData[tgtNode].nix == tgtNode);
 
@@ -247,7 +246,7 @@ public:
      * needs partition in nix-order
      */
     void disableEdges(GraphManager& gm) {
-        const EdgeIx* edgeMapPtr = thrust::raw_pointer_cast(gm.getEdgeMap().data());
+        const NodeIx* nodeLookupPtr = thrust::raw_pointer_cast(gm.getNodeLookup().data());
         NodeIx* neighborsPtr = thrust::raw_pointer_cast(gm.getNeighbors().data());
 
         int gridSize = (totalEdges + threads - 1) / threads;
@@ -255,7 +254,7 @@ public:
         disableEdgesKernel<<<gridSize, threads, 0, nullptr>>>(
             totalEdges,
             partition.Current(),
-            edgeMapPtr,
+            nodeLookupPtr,
             neighborsPtr
         );
     }
