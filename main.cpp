@@ -11,6 +11,54 @@ void checkBuildMode() {
     #endif
 }
 
+int main() {
+    checkBuildMode();
+
+    std::cout << "Reading input graph: ";
+    std::cout.flush();
+    DynamicGraph G_dyn = readDynGraph("../graphs/com-LiveJournal.mtx");
+    Graph G = G_dyn.finalize();
+    std::cout << "loaded " << G.numNodes << " nodes and " << G.numEdges << " edges\nBegin Expander Decomposition" << std::endl;
+
+    Timer t2;
+    t2.start();
+    CudaDeviceManager cuda;
+    cuda.initialize(G);
+    cuda.expanderDecomposition();
+    auto pt = cuda.downloadPartition();
+    printf("Terminated after %fs\n %llu\n", t2.timeSeconds(), pt.size());
+
+
+    return 1;
+
+    Timer t;
+    t.start();
+    auto ed = expanderDecomposition(G);
+    auto timeSpent = t.timeSeconds();
+
+    std::cout << "\nFinished:  (" << timeSpent << "s)\n-> "
+            << ed.numClusters() << " clusters with " << ed.getNumCutEdges() << " crossing edges" << std::endl;
+
+    //    writePartition(ed, "uk");
+
+    //    ExpanderHierarchy eh{&G};
+    //    eh.build();
+    //
+    //    auto timeSpent = t.timeSeconds();
+    //
+    //    std::cout << "\nFinished:  (" << timeSpent << "s)" << std::endl;
+    //
+    //    t.start();
+    //    NormalizedCut nc{&eh};
+    //    Partition kPart = nc.compute(16);
+    //
+    //    timeSpent = t.timeSeconds();
+    //
+    //    frac_t ncVal = compute_normalized_cut(kPart);
+    //    WARN("Checked NC:   \t" << ncVal << "\t\t[" << timeSpent << "s]");
+
+}
+
 void test2(Graph& G) {
     CudaDeviceManager cuda;
     cuda.initialize(G);
@@ -50,52 +98,4 @@ void test2(Graph& G) {
 
     Graph G2 = cuda.downloadGraph();
     std::cout << (G == G2) << std::endl;
-}
-
-int main() {
-    checkBuildMode();
-
-    std::cout << "Reading input graph: ";
-    std::cout.flush();
-    DynamicGraph G_dyn = readDynGraph("../graphs/com-LiveJournal.mtx");
-    Graph G = G_dyn.finalize();
-    std::cout << "loaded " << G.numNodes << " nodes and " << G.numEdges << " edges\nBegin Expander Decomposition" << std::endl;
-
-    Timer t2;
-    t2.start();
-    CudaDeviceManager cuda;
-    cuda.initialize(G);
-    cuda.expanderDecomposition();
-
-    printf("Terminated after %fs\n", t2.timeSeconds());
-
-
-    return 1;
-
-    Timer t;
-    t.start();
-    auto ed = expanderDecomposition(G);
-    auto timeSpent = t.timeSeconds();
-
-    std::cout << "\nFinished:  (" << timeSpent << "s)\n-> "
-              << ed.numClusters() << " clusters with " << ed.getNumCutEdges() << " crossing edges" << std::endl;
-
-//    writePartition(ed, "uk");
-
-//    ExpanderHierarchy eh{&G};
-//    eh.build();
-//
-//    auto timeSpent = t.timeSeconds();
-//
-//    std::cout << "\nFinished:  (" << timeSpent << "s)" << std::endl;
-//
-//    t.start();
-//    NormalizedCut nc{&eh};
-//    Partition kPart = nc.compute(16);
-//
-//    timeSpent = t.timeSeconds();
-//
-//    frac_t ncVal = compute_normalized_cut(kPart);
-//    WARN("Checked NC:   \t" << ncVal << "\t\t[" << timeSpent << "s]");
-
 }

@@ -253,20 +253,30 @@ struct NodeDataScanOp {
 struct ReduceOp {
     const int* labelsPtr;
     const EdgeIx* clusterVolumesPtr;
+    const int* labelLookupPtr;
     const int numClusters;
 
-    explicit ReduceOp(const int* labels, const EdgeIx* volumesPtr, const int num) : labelsPtr(labels), clusterVolumesPtr(volumesPtr), numClusters{num} {}
+    explicit ReduceOp(const int* labels, const EdgeIx* volumesPtr, const int* lookupPtr, const int num) : labelsPtr(labels), clusterVolumesPtr(volumesPtr), labelLookupPtr(lookupPtr), numClusters{num} {}
 
     __host__ __device__
     SweepCutData operator()(const NodeData& nodeData) const {
 
-        const int* it = thrust::lower_bound(
-            thrust::seq,
-            labelsPtr,
-            labelsPtr + numClusters,
-            nodeData.label
-        );
-        int correspondingIndex = static_cast<int>(it - labelsPtr);
+        // const int* it = thrust::lower_bound(
+        //     thrust::seq,
+        //     labelsPtr,
+        //     labelsPtr + numClusters,
+        //     nodeData.label
+        // );
+        // int correspondingIndex = static_cast<int>(it - labelsPtr);
+        //
+        // int comp = labelLookupPtr[nodeData.label];
+        // if (comp != correspondingIndex) {
+        //     printf("ERROR: the lookup failed!! %d != %d\n", comp, correspondingIndex);
+        // }
+        // correspondingIndex = comp;
+
+
+        int correspondingIndex = labelLookupPtr[nodeData.label];
 
         if (labelsPtr[correspondingIndex] != nodeData.label) {
             // for (int i = 0; i < numClusters; ++i) {
@@ -361,8 +371,11 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
             thrust::plus<>()
     );
 
+    pm.updateLabelLookup();
+
     EdgeIx* clusterVolumesPtr = thrust::raw_pointer_cast(pm.getVolumes().data());
     int* labelsPtr = thrust::raw_pointer_cast(pm.getActiveLabels().data());
+    const int* labelLookupPtr = thrust::raw_pointer_cast(pm.getLabelLookup().data());
 
 
     int num = end.second - pm.getVolumes().begin();
@@ -395,7 +408,7 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
         activeLabelIter,
         activeLabelIter + pm.numActiveNodes,
         // Values
-        thrust::make_transform_iterator(sortedData, ReduceOp(labelsPtr, clusterVolumesPtr, num)),
+        thrust::make_transform_iterator(sortedData, ReduceOp(labelsPtr, clusterVolumesPtr, labelLookupPtr, num)),
         // Output Label
             pm.getActiveLabels().begin(),
         // Output Values
@@ -407,6 +420,8 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
     int num_unique_keys = thrust::distance(pm.getActiveLabels().begin(), end_pair.first);
 
     pm.numActiveClusters = num_unique_keys;
+
+    assert(num == num_unique_keys);
 
 
 

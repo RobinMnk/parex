@@ -9,6 +9,7 @@
 #include <thrust/device_vector.h>
 #include <thrust/binary_search.h>
 #include "assert.h"
+#include "timer.h"
 
 struct InitFunctor {
     const NodeIx* ranges;
@@ -100,6 +101,8 @@ class PartitionManager {
     thrust::device_vector<int> activeLabels;
     thrust::device_vector<ClusterData> clusterSums;
 
+    thrust::device_vector<int> labelLookup;
+
 
     // CUB Buffers
     size_t tempBytesReduce = 0, tempBytesSort = 0;
@@ -109,6 +112,8 @@ class PartitionManager {
 public:
     NodeIx totalClusters{1}, numActiveClusters{1};
     NodeIx numDisabledNodes{0}, numActiveNodes;
+
+    Timer t;
 
     explicit PartitionManager(GraphManager& gm, cub::DoubleBuffer<uint64_t>& keys) :
         numNodes(gm.n),
@@ -121,6 +126,7 @@ public:
         activeVolumes(gm.n, 2 * gm.m),
         activeLabels(gm.n, 0),
         clusterSums(gm.n),
+        labelLookup(2 * gm.n + 1, -1),
         numActiveNodes{gm.n}
     {
         thrust::transform(
@@ -161,6 +167,7 @@ public:
 
         cudaMalloc(&tempStorageSort, tempBytesSort);
 
+        t.start();
     }
 
 
@@ -185,6 +192,9 @@ public:
 
         numDisabledNodes = thrust::distance(label_iter_all_clusters, label_iter);
         numActiveNodes = numNodes - numDisabledNodes;
+
+        printf("active Nodes: %d\t\tRound time:  %lldms\n", numActiveNodes, t.timeMillis());
+        t.start();
 
         return label_iter;
     }
@@ -226,9 +236,10 @@ public:
             clusterSums.begin()
         );
 
-        // thrust::copy_n(uniqueLabels.begin() + numUnique - 1, 1, &maxLabel);
+        // size_t maxLabel;
+        // thrust::copy_n(activeLabels.begin() + numActiveClusters - 1, 1, &maxLabel);
 
-        // printf("There are %d clusters and the maximum label is %d\n", numUnique, maxLabel);
+        // printf("There are %d clusters and the maximum label is %llu\n", numActiveClusters, maxLabel);
     }
 
 
@@ -273,26 +284,28 @@ public:
     void cutClusters(thrust::device_vector<SweepCutData>& sweepCuts) {
         SweepCutData* sweepCutPtr = thrust::raw_pointer_cast(sweepCuts.data());
         const int* uniqueLabelsPtr = thrust::raw_pointer_cast(activeLabels.data());
+        int* labelLookupPtr = thrust::raw_pointer_cast(labelLookup.data());
 
-        const NodeIx numActive = numActiveClusters;
         const NodeIx n = numNodes;
 
         thrust::for_each_n(
             thrust::device,
-            partition.Current(), // TODO: make activeNodes
-            numNodes,   // TODO: make numActiveNodes
-            [sweepCutPtr, uniqueLabelsPtr, numActive, n] __device__ (NodeData& data) {
+            activeNodes(),
+            numActiveNodes,
+            [sweepCutPtr, uniqueLabelsPtr, labelLookupPtr, n] __device__ (NodeData& data) {
                 const int clusterId = data.label;
                 if (clusterId < 0) return; // this cluster is inactive
 
-                const int* it = thrust::lower_bound(
-                    thrust::seq,
-                    uniqueLabelsPtr,
-                    uniqueLabelsPtr + numActive,
-                    clusterId
-                );
+                // const int* it = thrust::lower_bound(
+                //     thrust::seq,
+                //     uniqueLabelsPtr,
+                //     uniqueLabelsPtr + numActive,
+                //     clusterId
+                // );
+                //
+                // int correspondingSweepCutIndex = static_cast<int>(it - uniqueLabelsPtr);
 
-                int correspondingSweepCutIndex = static_cast<int>(it - uniqueLabelsPtr);
+                int correspondingSweepCutIndex = labelLookupPtr[clusterId];
 
                 if (clusterId != uniqueLabelsPtr[correspondingSweepCutIndex]) {
                     printf("ERRORRR!!!! clusterId does not match unique label! (clusterId = %d != %d = index\n", clusterId, correspondingSweepCutIndex);
@@ -306,7 +319,9 @@ public:
 
                 if(sc.sparsity < sc_threshold && data.offsetInCluster > sc.offset) {
                     // printf("Cluster %d is split into two parts -> new label = %d, because maxLabel = %d\n", data.label, data.label + n + 1, n);
-                    data.label += n + 1;
+                    int newLabel = clusterId + n + 1;
+                    data.label = newLabel;
+                    // labelLookupPtr[newLabel] = correspondingSweepCutIndex; // this does not work unfortunately
                 }
             }
         );
@@ -320,7 +335,6 @@ public:
         frac_t* distPtr = thrust::raw_pointer_cast(dist.data());
 
         const NodeIx numActive = numActiveClusters;
-        const NodeIx n = numNodes;
 
         thrust::for_each_n(
             thrust::device,
@@ -387,6 +401,38 @@ public:
     }
 
 
+    void updateLabelLookup() {
+        const int* uniqueLabelsPtr = thrust::raw_pointer_cast(activeLabels.data());
+        int* lookupPtr = thrust::raw_pointer_cast(labelLookup.data());
+
+        auto populate_map = [uniqueLabelsPtr, lookupPtr] __device__ (const int i) {
+            int label = uniqueLabelsPtr[i];
+            if (label >= 0) {
+                lookupPtr[label] = i;
+            }
+        };
+
+        thrust::for_each(
+            thrust::device,
+            thrust::make_counting_iterator<NodeIx>(0),
+            thrust::make_counting_iterator(numActiveClusters),
+            populate_map
+        );
+
+
+        // std::vector<int> h_lookup(2*numNodes+1);
+        // thrust::copy(labelLookup.begin(), labelLookup.end(), h_lookup.begin());
+        // for (int i = 0; i < h_lookup.size(); ++i) {
+        //     int index = h_lookup[i];
+        //     if (index >= 0) {
+        //         printf("label %d -> %d\n", i, index);
+        //     }
+        // }
+    }
+
+    auto& getLabelLookup() const  {
+        return labelLookup;
+    }
 
 
     /**
@@ -422,13 +468,13 @@ public:
         NodeData* out = partition.Alternate();
 
         thrust::for_each_n(
-                thrust::cuda::par.on(nullptr),
-                thrust::make_counting_iterator<NodeIx>(0),
-                numNodes,
-                [in, out] __device__ (NodeIx k) {
-                    const NodeData nd = in[k];
-                    out[nd.nix] = nd;
-                }
+            thrust::cuda::par.on(nullptr),
+            thrust::make_counting_iterator<NodeIx>(0),
+            numNodes,
+            [in, out] __device__ (NodeIx k) {
+                const NodeData nd = in[k];
+                out[nd.nix] = nd;
+            }
         );
 
         partition.selector ^= 1;

@@ -206,7 +206,7 @@ void CudaDeviceManager::Impl::expanderDecomposition() {
 
     Timer t;
     t.start();
-    while (i++ < 2000 && pt->numActiveClusters > 0) {
+    while (i++ < 2000 && pt->numActiveClusters > 0 && pt->numActiveNodes > 100) {
         // printf("==================================================================================== It: %d\n", (i+1));
 
         iterateRandomWalk();
