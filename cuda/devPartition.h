@@ -42,7 +42,7 @@ struct ActiveEdgeLogic {
 __global__
 void disableEdgesKernel(
     EdgeIx totalEdges,
-    const NodeData* __restrict__ nodeData,
+    const int* __restrict__ labels,
     const NodeIx* __restrict__ nodeLookup,
     NodeIx* __restrict__ neighbors
 ) {
@@ -55,7 +55,7 @@ void disableEdgesKernel(
         return;
     }
 
-    NodeIx tgtLabel = __ldg(&nodeData[tgtNode].label);
+    NodeIx tgtLabel = __ldg(&labels[tgtNode]);
 
     NodeIx srcNode = nodeLookup[edgeIdx];
 
@@ -64,7 +64,7 @@ void disableEdgesKernel(
         return;
     }
 
-    NodeIx srcLabel = nodeData[srcNode].label;
+    NodeIx srcLabel = labels[srcNode];
 
     // assert(edgeMap[revEdge] == edgeIdx);
     assert(nodeData[srcNode].nix == srcNode);
@@ -284,12 +284,13 @@ public:
     void disableEdges(GraphManager& gm) {
         const NodeIx* nodeLookupPtr = thrust::raw_pointer_cast(gm.getNodeLookup().data());
         NodeIx* neighborsPtr = thrust::raw_pointer_cast(gm.getNeighbors().data());
+        const int* labelsPtr = thrust::raw_pointer_cast(nodeLabels.data());
 
         int gridSize = (totalEdges + threads - 1) / threads;
 
         disableEdgesKernel<<<gridSize, threads, 0, nullptr>>>(
             totalEdges,
-            partition.Current(),
+            labelsPtr,
             nodeLookupPtr,
             neighborsPtr
         );
@@ -375,6 +376,7 @@ public:
         // subtract average from each (active) node
         const ClusterData* clusterDataPtr = thrust::raw_pointer_cast(clusterSums.data());
         const int* uniqueLabelsPtr = thrust::raw_pointer_cast(activeLabels.data());
+        int* labelsPtr = thrust::raw_pointer_cast(nodeLabels.data());
 
         frac_t* distPtr = thrust::raw_pointer_cast(dist.data());
 
@@ -384,7 +386,7 @@ public:
             thrust::device,
             activeNodes(),
             numActiveNodes,
-            [clusterDataPtr, uniqueLabelsPtr, distPtr, numActive] __device__ (NodeData& data) {
+            [clusterDataPtr, uniqueLabelsPtr, distPtr, labelsPtr, numActive] __device__ (NodeData& data) {
                 const int label = data.label;
 
                 if (data.label < 0) {
@@ -419,9 +421,12 @@ public:
                     // this cluster should be deactivated
                     int smallestLabel = uniqueLabelsPtr[0];
                     // printf("Deactivating cluster: %d -> %d \t smallest: %d\n", label, smallestLabel - data.label - 1, smallestLabel);
-                    data.label = smallestLabel - data.label - 1;
+                    int updatedLabel = smallestLabel - data.label - 1;
+                    data.label = updatedLabel;
+                    labelsPtr[data.nix] = updatedLabel;
                 } else {
                     data.label = correspondingSweepCutIndex;
+                    labelsPtr[data.nix] = correspondingSweepCutIndex;
 
                     const float average = cd.rwSum / static_cast<double>(cd.totalElements);
                     distPtr[data.nix] -= average; // TODO: write this diff to any unused field within NodeData! (save random write)

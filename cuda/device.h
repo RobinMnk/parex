@@ -34,7 +34,7 @@ struct CudaDeviceManager::Impl {
     }
 
     void iterateRandomWalk() {
-        rw->stepFast(*gm, pt->getPartitionView(), sc->getKeyBuffer(), pt->getActiveDegrees());
+        rw->stepFast(*gm, pt->getPartitionView(), sc->getKeyBuffer(), pt->getNextLabels(), pt->getActiveDegrees());
     }
 
     std::vector<frac_t> readRandomWalkValues() {
@@ -74,7 +74,7 @@ struct CudaDeviceManager::Impl {
         pt->recenterAndDeactivateClusters(rw->getValues());
 
         // absolutely crucial!!
-        fixupPartition();
+        // fixupPartition();
 
         // thrust::copy(dev_ptr, dev_ptr + gm->n, nodes.begin());
         // printf("After Fixup\n");

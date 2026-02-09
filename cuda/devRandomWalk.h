@@ -159,6 +159,7 @@ void finalizeRandomWalk(
     NodeIx numNodes,
     const EdgeIx* __restrict__ activeDegrees,
     const frac_t* __restrict__ incoming_sums,
+    const int* __restrict__ labels,
     frac_t* __restrict__ dist,
     NodeData* __restrict__ nodeData,
     uint64_t* __restrict__ packedKeys
@@ -166,9 +167,9 @@ void finalizeRandomWalk(
     NodeIx i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= numNodes) return;
 
-    const NodeData data = nodeData[i];
-    if (data.label < 0) {
-        packedKeys[i] = packKey(data.label, 0);
+    const int label = __ldg(&labels[i]);
+    if (label < 0) {
+        packedKeys[i] = packKey(label, 0);
         return;
     }
 
@@ -176,7 +177,9 @@ void finalizeRandomWalk(
 
     dist[i] = nodeVal;
     nodeData[i].activeDegree = activeDegrees[i];
-    packedKeys[i] = packKey(data.label, nodeVal);
+    nodeData[i].label = label;
+    nodeData[i].nix = i;
+    packedKeys[i] = packKey(label, nodeVal);
 }
 
 
@@ -207,6 +210,7 @@ public:
     void stepFast(GraphManager& gm,
           cub::DoubleBuffer<NodeData>& partition,
           cub::DoubleBuffer<uint64_t>& packedKeys,
+          thrust::device_vector<int>& nodeLabels,
           thrust::device_vector<EdgeIx>& activeDegrees
     ) {
         const EdgeIx* rangesPtr = thrust::raw_pointer_cast(gm.getRanges().data());
@@ -214,6 +218,7 @@ public:
         const EdgeIx* activeDegsPtr = thrust::raw_pointer_cast(activeDegrees.data());
         frac_t* distPtr = thrust::raw_pointer_cast(dist.data());
         frac_t* incomingSumsPtr = thrust::raw_pointer_cast(incomingSums.data());
+        const int* labelsPtr = thrust::raw_pointer_cast(nodeLabels.data());
 
         thrust::counting_iterator<EdgeIx> edgeIndexIter(0);
         WalkEdgeLogic functor{neighborsPtr, activeDegsPtr, distPtr};
@@ -234,6 +239,7 @@ public:
             numNodes,
             activeDegsPtr,
             incomingSumsPtr,
+            labelsPtr,
             distPtr,
             partition.Current(),
             packedKeys.Current()
