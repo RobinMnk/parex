@@ -10,7 +10,7 @@
 #include "utils/graph_io.h"
 #include "timer.h"
 
-constexpr auto filename = "../../graphs/uk.mtx";
+constexpr auto filename = "../../graphs/mock.mtx";
 
 class CudaTest : public ::testing::TestWithParam<int> {
 protected:
@@ -323,6 +323,11 @@ TEST_P(CudaTest, RepeatedCuts) {
 
         std::unordered_map<int, int> lookup = gpuLookup(pt);
 
+        for(NodeIx ix = 0; ix < active.size(); ix++) {
+            std::vector<NodeIx> m;
+            part.consolidate(ix, active);
+        }
+
 
         NodeIx numClusters = active.size();
         for(NodeIx ix = 0; ix < numClusters; ix++) {
@@ -372,7 +377,7 @@ TEST_P(CudaTest, RepeatedCuts) {
             }
 
             if (sweepCut.sparsity >= sc_threshold) continue;
-            part.split<false, false>(clusterId, sweepCut.offset, active);
+            part.split<false, true>(clusterId, sweepCut.offset, active);
         }
 
         for (NodeIx cix = 0; cix < part.numClusters(); cix++) {
@@ -391,6 +396,7 @@ TEST_P(CudaTest, RepeatedCuts) {
         // checks
         for (NodeIx nix = 0; nix < graph.numNodes; nix++) {
             ASSERT_EQ(pt[nix].nix, nix);
+            printf("Node %d is in cluster %d\n", nix, pt[nix].label);
             // EXPECT_EQ(pt[nix].label, expectedLabels[nix]) << " nix: " << nix << "\t Iteration: " << (i+1);
         }
 

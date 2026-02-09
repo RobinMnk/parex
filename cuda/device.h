@@ -30,7 +30,7 @@ struct CudaDeviceManager::Impl {
         sc = std::make_unique<SweepCutManager>(graph.numNodes);
         pt = std::make_unique<PartitionManager>(*gm, sc->getKeyBuffer());
         rw = std::make_unique<RandomWalkManager>(graph.numNodes);
-        cm = std::make_unique<ConsolidationManager>(graph.numNodes);
+        cm = std::make_unique<ConsolidationManager>(graph.numNodes, 2 * graph.numEdges);
     }
 
     void iterateRandomWalk() {
@@ -52,12 +52,36 @@ struct CudaDeviceManager::Impl {
     void cutClusters() {
         pt->cutClusters(sc->getSweepCuts());
 
+        // std::vector<NodeData> nodes(gm->n);
+        // thrust::device_ptr<NodeData> dev_ptr(pt->getPartitionView().Current());
+        // thrust::copy(dev_ptr, dev_ptr + gm->n, nodes.begin());
+        // printf("Before Consolidate\n");
+        // for (NodeIx i = 0; i < gm->n; i++) {
+        //     printf("Node %d has label %d\n", nodes[i].nix, nodes[i].label);
+        // }
+
+        cm->consolidate(*gm, pt->getPartitionView(), pt->getNextLabels());
+
+        // thrust::copy(dev_ptr, dev_ptr + gm->n, nodes.begin());
+        // printf("After Consolidate\n");
+        // for (NodeIx i = 0; i < gm->n; i++) {
+        //     printf("Node %d has label %d\n", nodes[i].nix, nodes[i].label);
+        // }
+
+
         pt->computeClusterData();
 
         pt->recenterAndDeactivateClusters(rw->getValues());
 
         // absolutely crucial!!
         fixupPartition();
+
+        // thrust::copy(dev_ptr, dev_ptr + gm->n, nodes.begin());
+        // printf("After Fixup\n");
+        // for (NodeIx i = 0; i < gm->n; i++) {
+        //     printf("Node %d has label %d\n", nodes[i].nix, nodes[i].label);
+        // }
+        // std::cout << std::endl;
 
         pt->disableEdges(*gm);
 

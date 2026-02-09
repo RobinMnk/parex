@@ -94,6 +94,8 @@ class PartitionManager {
     thrust::device_vector<NodeData> partition2;
     cub::DoubleBuffer<NodeData> partition;
 
+    thrust::device_vector<int> nodeLabels;
+
     thrust::device_vector<EdgeIx> activeDegrees;
 
     thrust::device_vector<EdgeIx> activeVolumes;
@@ -112,7 +114,7 @@ public:
     NodeIx totalClusters{1}, numActiveClusters{1};
     NodeIx numDisabledNodes{0}, numActiveNodes;
 
-    Timer t;
+    Timer t, t2;
 
     explicit PartitionManager(GraphManager& gm, cub::DoubleBuffer<uint64_t>& keys) :
         numNodes(gm.n),
@@ -121,6 +123,7 @@ public:
         partition2(gm.n),
         partition(thrust::raw_pointer_cast(partition1.data()),
             thrust::raw_pointer_cast(partition2.data())),
+        nodeLabels(gm.n, 0),
         activeDegrees(gm.n),
         activeVolumes(gm.n, 2 * gm.m),
         activeLabels(gm.n, 0),
@@ -167,6 +170,7 @@ public:
         cudaMalloc(&tempStorageSort, tempBytesSort);
 
         t.start();
+        t2.start();
     }
 
 
@@ -192,7 +196,7 @@ public:
         numDisabledNodes = thrust::distance(label_iter_all_clusters, label_iter);
         numActiveNodes = numNodes - numDisabledNodes;
 
-        printf("active Nodes: %d\t\tRound time:  %lldms\n", numActiveNodes, t.timeMillis());
+        printf("active Nodes: %d (clusters: %d)\t\tRound time:  %lldms\ttotal time: %lldms\n", numActiveNodes, numActiveClusters, t.timeMillis(), t2.timeMillis());
         t.start();
 
         return label_iter;
@@ -211,9 +215,20 @@ public:
      *  needs Partition in label-order
      */
     void computeClusterData() {
-        NodeData* partitionPtr = activeNodes();
-        auto label_iter = thrust::make_transform_iterator(partitionPtr, LabelExtractorRW());
-        auto value_iter = thrust::make_transform_iterator(partitionPtr, ClusterDataExtractorRW());
+        auto active_base_ptr = partition.Current() + numDisabledNodes;
+
+        auto label_iter = thrust::make_transform_iterator(active_base_ptr, LabelExtractorRW());
+
+        thrust::device_vector<int> temp_keys(numActiveNodes, 0);
+        thrust::copy(thrust::device, label_iter, label_iter + numActiveNodes, temp_keys.begin());
+
+        thrust::sort_by_key(
+            temp_keys.begin(),
+            temp_keys.end(),
+            active_base_ptr
+        );
+
+        auto value_iter = thrust::make_transform_iterator(activeNodes(), ClusterDataExtractorRW());
 
         // find ClusterData for each cluster (to compute potential and average of each)
         auto end_iters = thrust::reduce_by_key(
@@ -229,14 +244,35 @@ public:
 
         numActiveClusters = end_iters.second - clusterSums.begin();
 
-        thrust::sort_by_key(
-            activeLabels.begin(),
-            activeLabels.begin() + numActiveClusters,
-            clusterSums.begin()
-        );
+        // thrust::sort_by_key(
+        //     activeLabels.begin(),
+        //     activeLabels.begin() + numActiveClusters,
+        //     clusterSums.begin()
+        // );
+
+        // end_iters = thrust::reduce_by_key(
+        //     thrust::device,
+        //     activeLabels.begin(),
+        //     activeLabels.begin() + numActiveClusters,
+        //     clusterSums.begin(),
+        //     activeLabels.begin(),
+        //     clusterSums.begin(),
+        //     thrust::equal_to<int>(),
+        //     ClusterDataReduceOp()
+        // );
+        //
+        // numActiveClusters = end_iters.second - clusterSums.begin();
+
 
         // size_t maxLabel;
         // thrust::copy_n(activeLabels.begin() + numActiveClusters - 1, 1, &maxLabel);
+
+        // std::vector<int> h_labels(numActiveClusters);
+        // thrust::copy(activeLabels.begin(), activeLabels.begin() + numActiveClusters, h_labels.begin());
+        // for (int i = 0; i < numActiveClusters; i++) {
+        //     printf("%d: Cluster: %d\n", i, h_labels[i]);
+        // }
+        // fflush(stdout);
 
         // printf("There are %d clusters and the maximum label is %llu\n", numActiveClusters, maxLabel);
     }
@@ -284,6 +320,7 @@ public:
         SweepCutData* sweepCutPtr = thrust::raw_pointer_cast(sweepCuts.data());
         const int* uniqueLabelsPtr = thrust::raw_pointer_cast(activeLabels.data());
         int* labelLookupPtr = thrust::raw_pointer_cast(labelLookup.data());
+        int* updatedLabelPtr = thrust::raw_pointer_cast(nodeLabels.data());
 
         const NodeIx n = numNodes;
 
@@ -291,9 +328,14 @@ public:
             thrust::device,
             activeNodes(),
             numActiveNodes,
-            [sweepCutPtr, uniqueLabelsPtr, labelLookupPtr, n] __device__ (NodeData& data) {
+            [sweepCutPtr, uniqueLabelsPtr, labelLookupPtr, updatedLabelPtr, n] __device__ (NodeData& data) {
                 const int clusterId = data.label;
-                if (clusterId < 0) return; // this cluster is inactive
+                if (clusterId < 0) {
+                    // cluster already inactive - this should actually never happen now!
+                    // printf("node %d with label %d returns because label is negative\n", data.nix, label);
+                    printf("ERROR: Considering inactive node in recenterAndDeactivateClusters! It has label %d\n", data.label);
+                    return;
+                }
 
                 // const int* it = thrust::lower_bound(
                 //     thrust::seq,
@@ -320,7 +362,10 @@ public:
                     // printf("Cluster %d is split into two parts -> new label = %d, because maxLabel = %d\n", data.label, data.label + n + 1, n);
                     int newLabel = clusterId + n + 1;
                     data.label = newLabel;
+                    updatedLabelPtr[data.nix] = newLabel;
                     // labelLookupPtr[newLabel] = correspondingSweepCutIndex; // this does not work unfortunately
+                } else {
+                    updatedLabelPtr[data.nix] = clusterId;
                 }
             }
         );
@@ -431,6 +476,9 @@ public:
 
     auto& getLabelLookup() const  {
         return labelLookup;
+    }
+    auto& getNextLabels()  {
+        return nodeLabels;
     }
 
 
