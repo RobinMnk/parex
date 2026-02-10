@@ -382,11 +382,16 @@ public:
 
         const NodeIx numActive = numActiveClusters;
 
+
+        updateLabelLookup();
+        int* labelLookupPtr = thrust::raw_pointer_cast(labelLookup.data());
+
+
         thrust::for_each_n(
             thrust::device,
             activeNodes(),
             numActiveNodes,
-            [clusterDataPtr, uniqueLabelsPtr, distPtr, labelsPtr, numActive] __device__ (NodeData& data) {
+            [clusterDataPtr, uniqueLabelsPtr, distPtr, labelsPtr, labelLookupPtr, numActive] __device__ (NodeData& data) {
                 const int label = data.label;
 
                 if (data.label < 0) {
@@ -396,13 +401,20 @@ public:
                     return;
                 }
 
-                const int* it = thrust::lower_bound(
-                    thrust::seq,
-                    uniqueLabelsPtr,
-                    uniqueLabelsPtr + numActive,
-                    label
-                );
-                int correspondingSweepCutIndex = static_cast<int>(it - uniqueLabelsPtr);
+                // const int* it = thrust::lower_bound(
+                //     thrust::seq,
+                //     uniqueLabelsPtr,
+                //     uniqueLabelsPtr + numActive,
+                //     label
+                // );
+                // int correspondingSweepCutIndex = static_cast<int>(it - uniqueLabelsPtr);
+
+                int correspondingSweepCutIndex = labelLookupPtr[label];
+
+                // if (comp != correspondingSweepCutIndex) {
+                //     printf("WARN: comp != correspondingSweepCutIndex \t %d != %d\n", comp, correspondingSweepCutIndex);
+                // }
+
 
                 if (uniqueLabelsPtr[correspondingSweepCutIndex] != label) {
                     printf("ERROR: label mismatch!! For nix = %d:\t%d != %d\n", data.nix, label, uniqueLabelsPtr[correspondingSweepCutIndex]);
