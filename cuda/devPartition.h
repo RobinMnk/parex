@@ -104,6 +104,8 @@ class PartitionManager {
 
     thrust::device_vector<int> labelLookup;
 
+    thrust::device_vector<int> temp_keys;
+
 
     // CUB Buffers
     size_t tempBytesReduce = 0, tempBytesSort = 0;
@@ -129,6 +131,7 @@ public:
         activeLabels(gm.n, 0),
         clusterSums(gm.n),
         labelLookup(2 * gm.n + 1, -1),
+        temp_keys(gm.n, 0),
         numActiveNodes{gm.n}
     {
         thrust::transform(
@@ -219,12 +222,11 @@ public:
 
         auto label_iter = thrust::make_transform_iterator(active_base_ptr, LabelExtractorRW());
 
-        thrust::device_vector<int> temp_keys(numActiveNodes, 0);
         thrust::copy(thrust::device, label_iter, label_iter + numActiveNodes, temp_keys.begin());
 
         thrust::sort_by_key(
             temp_keys.begin(),
-            temp_keys.end(),
+            temp_keys.begin() + numActiveNodes,
             active_base_ptr
         );
 
