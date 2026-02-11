@@ -371,14 +371,14 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
             thrust::plus<>()
     );
 
-    pm.updateLabelLookup();
-
     EdgeIx* clusterVolumesPtr = thrust::raw_pointer_cast(pm.getVolumes().data());
     int* labelsPtr = thrust::raw_pointer_cast(pm.getActiveLabels().data());
     const int* labelLookupPtr = thrust::raw_pointer_cast(pm.getLabelLookup().data());
 
-
     int num = end.second - pm.getVolumes().begin();
+
+    pm.numActiveClusters = num;
+    pm.updateLabelLookup();
 
     // assert(num == pm.numActiveClusters);
 
@@ -419,14 +419,24 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
 
     int num_unique_keys = thrust::distance(pm.getActiveLabels().begin(), end_pair.first);
 
-    pm.numActiveClusters = num_unique_keys;
-
     assert(num == num_unique_keys);
 
-
-
-    // std::vector<SweepCutData> scs(numActiveClusters);
-    // thrust::copy(sweepCuts.begin(), sweepCuts.begin() + numActiveClusters, scs.begin());
+    // std::vector<SweepCutData> scs(pm.numActiveClusters);
+    // thrust::copy(sweepCuts.begin(), sweepCuts.begin() + pm.numActiveClusters, scs.begin());
+    //
+    // std::vector<int> lbl(pm.numActiveClusters);
+    // thrust::copy(pm.getActiveLabels().begin(), pm.getActiveLabels().begin() + pm.numActiveClusters, lbl.begin());
+    //
+    //
+    // for (int i = 0; i < pm.numActiveClusters; i++) {
+    //     if (scs[i].clusterId != lbl[i]) {
+    //         printf("ERROR: label mismatch in sweepcut! scId = %d != %d = label at index %d\n", scs[i].clusterId, lbl[i], i);
+    //     }
+    //     if ( i == 35764 || i == 40937 || i == 31427) {
+    //         printf("\tix %d: label %d, sc = [id: %d, sps = %f, off = %d]\n", i, lbl[i], scs[i].clusterId, scs[i].sparsity, scs[i].offset);
+    //     }
+    // }
+    // fflush(stdout);
 
     // printf("Computed these sweep cuts:\n");
     // for (auto sc : scs) {

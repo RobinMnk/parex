@@ -353,10 +353,10 @@ public:
                     printf("ERRORRR!!!! clusterId does not match unique label! (clusterId = %d != %d = index\n", clusterId, correspondingSweepCutIndex);
                 }
 
-                SweepCutData sc = sweepCutPtr[correspondingSweepCutIndex];
+                const SweepCutData sc = sweepCutPtr[correspondingSweepCutIndex];
 
                 if (clusterId != sc.clusterId) {
-                    printf("ERRORRR!!!! clusterId does not match sweep cut!\n%d is the clusterId, this is the scId: %d\n", clusterId, sc.clusterId);
+                    printf("ERRORRR!!!! clusterId does not match sweep cut (ix = %d)!\n\t%d is the clusterId, this is the scId: %d\t[sparsity = %f, offset = %d]\n", correspondingSweepCutIndex, clusterId, sc.clusterId, sc.sparsity, sc.offset);
                 }
 
                 if(sc.sparsity < sc_threshold && data.offsetInCluster > sc.offset) {
