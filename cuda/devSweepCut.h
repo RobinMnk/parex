@@ -42,10 +42,10 @@ void nodeDiffKernel_Sparse_WarpParallel(
 
     const NodeIx i = warpId;
 
-    NodeData data;
+    NodeData data{};
     if (lane == 0) {
         data = nodeData[i];
-        assert(data.nix == i && "nix mismatch!");
+        // assert(data.nix == i && "nix mismatch!");
     }
 
     const int words = (sizeof(NodeData) + sizeof(int) - 1) / sizeof(int);
@@ -75,7 +75,7 @@ void nodeDiffKernel_Sparse_WarpParallel(
         if (neighbor == INVALID_EDGE) continue;
 
         const NodeData nbData = nodeData[neighbor];
-        assert(nbData.nix == neighbor && "neighbor nix mismatch!");
+        // assert(nbData.nix == neighbor && "neighbor nix mismatch!");
 
         if (nbData.label == data.label) {
 

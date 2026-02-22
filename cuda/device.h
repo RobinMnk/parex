@@ -45,6 +45,21 @@ struct CudaDeviceManager::Impl {
         return pt->downloadActiveDegrees();
     }
 
+    int getNumClusters() {
+        return 0;
+        // return pt->numActiveClusters;
+    }
+
+    FinalPartition getFinalPartition() {
+        return pt->finalizePartition();
+    }
+
+    std::vector<int> downloadLabels() {
+        std::vector<int> labels(gm->n);
+        thrust::copy(pt->getNextLabels().begin(), pt->getNextLabels().end(), labels.begin());
+        return labels;
+    }
+
     void computeSweepCuts() {
         sc->compute(*gm, *pt, rw->randomWalkValues());
     }
@@ -308,6 +323,12 @@ AllSweepCuts CudaDeviceManager::readSweepCuts() { return impl->getSweepCuts(); }
 std::vector<NodeData> CudaDeviceManager::downloadPartition() { return impl->downloadPartition(); }
 
 std::vector<int> CudaDeviceManager::downloadActiveEdgeMap() { return impl->downloadActiveEdgeMap(); }
+
+std::vector<int> CudaDeviceManager::downloadLabels() { return impl->downloadLabels(); }
+int CudaDeviceManager::getNumClusters() { return impl->getNumClusters(); }
+
+
+FinalPartition CudaDeviceManager::getFinalPartition() { return impl->getFinalPartition(); }
 
 void CudaDeviceManager::updateLabels(std::vector<NodeIx>& nodeLabels, NodeIx activeClusters) { impl->updateLabels(nodeLabels, activeClusters); }
 

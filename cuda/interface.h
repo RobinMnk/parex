@@ -37,7 +37,13 @@ public:
 
     void expanderDecomposition();
 
+    FinalPartition getFinalPartition();
+
     std::vector<int> downloadActiveEdgeMap();
+    std::vector<int> downloadLabels();
+    int getNumClusters();
+
+
 
     void updateLabels(std::vector<NodeIx>& nodeLabels, NodeIx activeClusters);
 

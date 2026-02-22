@@ -26,11 +26,11 @@ using EdgeWeight    = unsigned int;
 using frac_t        = float;
 
 constexpr int threads = 256;
-constexpr unsigned int seed{6};
+constexpr unsigned int seed{6523482};
 
 constexpr frac_t rw_stay = 0.1;
-constexpr frac_t rw_threshold = 1e-4;
-constexpr float sc_threshold = 0.3;
+constexpr frac_t rw_threshold = 1e-8;
+constexpr float sc_threshold = 0.01;
 
 constexpr NodeIx INVALID_EDGE = static_cast<NodeIx>(-1);
 
@@ -57,6 +57,11 @@ struct AllSweepCuts {
     std::vector<int> clusterIds;
     std::vector<SweepCutData> cuts;
 //    std::vector<PrefixValues> prefixSums;
+};
+
+struct FinalPartition {
+    std::vector<int> clusterIds;
+    int numClusters;
 };
 
 

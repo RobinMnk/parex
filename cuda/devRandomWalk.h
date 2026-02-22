@@ -9,6 +9,7 @@
 #include <thrust/transform.h>
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/random.h>
+#include <thrust/functional.h>
 
 #include <curand_kernel.h>
 
@@ -25,13 +26,33 @@ struct NormalDistributionFunctor {
     explicit NormalDistributionFunctor(unsigned int s) : base_seed(s) {}
 
     __host__ __device__
-    frac_t operator()(const NodeIx idx) const {
-        thrust::default_random_engine rng(base_seed);
-        thrust::normal_distribution<frac_t> dist;
-        rng.discard(idx);
-        return dist(rng);
-//        return static_cast<frac_t>(idx) / 4096;
+    unsigned int hash_idx(unsigned int x) const {
+        x = ((x >> 16) ^ x) * 0x45d9f3b;
+        x = ((x >> 16) ^ x) * 0x45d9f3b;
+        x = (x >> 16) ^ x;
+        return x;
     }
+
+    __host__ __device__
+    frac_t operator()(const NodeIx idx) const {
+        // 1. Create a unique seed for THIS thread/index
+        // Using a simple hash to combine base_seed and idx is more robust
+        unsigned int thread_seed = hash_idx(base_seed ^ idx);
+
+        thrust::default_random_engine rng(thread_seed);
+        thrust::normal_distribution<frac_t> dist;
+
+        return dist(rng);
+    }
+
+//     __host__ __device__
+//     frac_t operator()(const NodeIx idx) const {
+//         thrust::default_random_engine rng(base_seed);
+//         thrust::normal_distribution<frac_t> dist;
+//         rng.discard(idx);
+//         return dist(rng);
+// //        return static_cast<frac_t>(idx) / 4096;
+//     }
 };
 
 

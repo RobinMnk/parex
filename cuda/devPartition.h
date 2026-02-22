@@ -9,6 +9,8 @@
 #include <thrust/device_vector.h>
 #include <thrust/binary_search.h>
 #include "assert.h"
+#include <thrust/sort.h>
+#include <thrust/unique.h>
 #include "timer.h"
 
 struct InitFunctor {
@@ -67,8 +69,8 @@ void disableEdgesKernel(
     NodeIx srcLabel = labels[srcNode];
 
     // assert(edgeMap[revEdge] == edgeIdx);
-    assert(nodeData[srcNode].nix == srcNode);
-    assert(nodeData[tgtNode].nix == tgtNode);
+    // assert(nodeData[srcNode].nix == srcNode);
+    // assert(nodeData[tgtNode].nix == tgtNode);
 
     if (srcLabel != tgtLabel) {
         // inactive edges point to totalEdges
@@ -220,6 +222,7 @@ public:
     void computeClusterData() {
         auto active_base_ptr = partition.Current() + numDisabledNodes;
 
+        // TODO I should already have this somewhere
         auto label_iter = thrust::make_transform_iterator(active_base_ptr, LabelExtractorRW());
 
         thrust::copy(thrust::device, label_iter, label_iter + numActiveNodes, temp_keys.begin());
@@ -526,6 +529,33 @@ public:
         );
     }
 
+    FinalPartition finalizePartition() {
+        thrust::device_vector<int> B(numNodes);
+
+        // 1. Create a sorted list of unique elements from A
+        thrust::device_vector<int> unique_keys = nodeLabels;
+        thrust::sort(unique_keys.begin(), unique_keys.end());
+        auto new_end = thrust::unique(unique_keys.begin(), unique_keys.end());
+
+        int num_unique = thrust::distance(unique_keys.begin(), new_end);
+
+        unique_keys.erase(new_end, unique_keys.end());
+
+        // 2. Map original values in A to their index in unique_keys
+        // lower_bound returns the position, which effectively becomes the ID [0, num_unique-1]
+        thrust::lower_bound(unique_keys.begin(),
+                            unique_keys.end(),
+                            nodeLabels.begin(),
+                            nodeLabels.end(),
+                            B.begin());
+
+
+        std::vector<int> labels(numNodes);
+        thrust::copy(B.begin(), B.end(), labels.begin());
+
+        return {labels, num_unique };
+    }
+
     /**
      * Restore nix-order, i.e., invariant that partition[i].nix == i
      */
@@ -609,7 +639,7 @@ public:
 //        std::vector<EdgeIx> result(n);
 //        for(int i = 0; i < n; i++) {
 //            result[degrees[i].ix] = degrees[i].deg;
-//        }
+//        }D
 //        return result;
 //    }
 

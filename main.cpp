@@ -16,7 +16,7 @@ int main() {
 
     std::cout << "Reading input graph: ";
     std::cout.flush();
-    DynamicGraph G_dyn = readDynGraph("../graphs/com-LiveJournal.mtx");
+    DynamicGraph G_dyn = readDynGraph("../graphs/coPapersCiteseer.mtx");
     Graph G = G_dyn.finalize();
     std::cout << "loaded " << G.numNodes << " nodes and " << G.numEdges << " edges\nBegin Expander Decomposition" << std::endl;
 
@@ -25,11 +25,21 @@ int main() {
     CudaDeviceManager cuda;
     cuda.initialize(G);
     cuda.expanderDecomposition();
-    auto pt = cuda.downloadPartition();
-    printf("Terminated after %fs\n %llu\n", t2.timeSeconds(), pt.size());
+    // auto pt = cuda.downloadLabels();
+    auto tm = t2.timeSeconds();
+    // int numClusters = cuda.getNumClusters();
+    FinalPartition fpt = cuda.getFinalPartition();
+    printf("Terminated after %fs\t-> %d clusters.\n", tm, fpt.numClusters);
+
+    t2.start();
+    Partition part(&G);
+    std::vector<NodeIx> mod;
+    part.splitByIndices<false, false>(0, fpt.clusterIds, fpt.numClusters, mod);
+
+    printf(" -> Partition has %d clusters and cuts %d edges\t[computed in %fs]", part.numClusters(), part.getNumCutEdges(), t2.timeSeconds());
 
 
-    return 1;
+    return 0;
 
     Timer t;
     t.start();

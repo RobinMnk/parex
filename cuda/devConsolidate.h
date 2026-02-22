@@ -17,7 +17,7 @@ void linkEdges_kernel(
     const NodeIx* __restrict__ neighbors,
     const NodeIx* __restrict__ nodeLookup,
     NodeIx* __restrict__ parent,
-    int* __restrict__ nextLabels,
+    const int* __restrict__ nextLabels,
     EdgeIx numEdges,
     int* __restrict__ d_changed
 ) {
@@ -61,7 +61,7 @@ void compress_kernel(NodeIx* __restrict__ parent, NodeIx numNodes) {
     NodeIx p = parent[i];
     NodeIx gp = parent[p];
     if (p != gp) {
-        parent[i] = gp;
+        parent[i] = gp; // TODO: this race condition makes everything non-deterministic!!!
     }
 }
 
