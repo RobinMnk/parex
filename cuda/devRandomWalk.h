@@ -188,6 +188,7 @@ void finalizeRandomWalk(
 
     const int label = __ldg(&labels[i]);
     if (label < 0) {
+        nodeData[i].nix = i;
         packedKeys[i] = packKey(label, 0);
         return;
     }
@@ -265,6 +266,17 @@ public:
             partition.Current(),
             packedKeys.Current()
         );
+
+        // cudaDeviceSynchronize();
+        //
+        // printf("Partition after finalize : %p\n", partition.Current());
+        //
+        // std::vector<NodeData> nodes(numNodes);
+        // thrust::device_ptr<NodeData> dev_ptr(partition.Current());
+        // thrust::copy(dev_ptr, dev_ptr + numNodes, nodes.begin());
+        // for (NodeIx i = 0; i < numNodes; i++) {
+        //     printf("%d: nix = %d, label: %d\n", i, nodes[i].nix, nodes[i].label);
+        // }
     }
 
 

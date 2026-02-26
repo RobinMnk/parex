@@ -88,6 +88,7 @@ class GraphManager {
     // Graph
     thrust::device_vector<NodeIx> neighbors;
     const thrust::device_vector<EdgeIx> ranges;
+    thrust::device_vector<NodeIx> degrees;
 
     thrust::device_vector<NodeIx> nodeLookup;
 
@@ -124,13 +125,14 @@ public:
     explicit GraphManager(const Graph& graph) :
         neighbors(graph.edges),
         ranges(graph.ranges),
+        degrees(graph.numNodes),
         nodeLookup(2*graph.numEdges),
         n(graph.numNodes),
         m(graph.numEdges)
     //        edgeDeletionBuffer(2 * graph.numEdges),
     //        nodeUpdateBuffer(graph.numNodes)
     {
-        //        thrust::transform(ranges.begin() + 1, ranges.end(), ranges.begin(), active_degrees.begin(), thrust::minus<int>());
+        thrust::transform(ranges.begin() + 1, ranges.end(), ranges.begin(), degrees.begin(), thrust::minus<int>());
 
         populateNodeLookup(graph.numNodes, 2 * graph.numEdges);
         // std::cout << "Copied Graph to GPU. \t" << neighbors.size() / 2 << " edges copied" << std::endl;
@@ -154,6 +156,10 @@ public:
 
     thrust::device_vector<NodeIx>& getNeighbors() {
         return neighbors;
+    }
+
+    thrust::device_vector<NodeIx>& getDegrees() {
+        return degrees;
     }
 
     const thrust::device_vector<NodeIx> & getNodeLookup() const {

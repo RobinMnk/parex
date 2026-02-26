@@ -35,20 +35,19 @@ inline float sc_threshold = 0.3;
 constexpr NodeIx INVALID_EDGE = static_cast<NodeIx>(-1);
 
 struct SweepCutData {
-    int clusterId;
+    int64_t clusterId;
     float sparsity;
     NodeIx offset;
 };
 
 struct NodeData {
     NodeIx nix;
-    int label;  // a negative label represents inactive cluster
-    EdgeIx degree;
     EdgeIx activeDegree;
+    int64_t label;  // a negative label represents inactive cluster
 
     float rwValue;
     EdgeIx prefixVolume;
-    int prefixEdgeDiff;
+    int32_t prefixEdgeDiff;
     NodeIx offsetInCluster;
 };
 

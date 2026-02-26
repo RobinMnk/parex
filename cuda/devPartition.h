@@ -25,9 +25,8 @@ struct InitFunctor {
 
         return {
             static_cast<NodeIx>(i),
+            end - start,
             0,
-            end - start,
-            end - start,
         };
     }
 };
@@ -350,7 +349,7 @@ public:
                 if (clusterId < 0) {
                     // cluster already inactive - this should actually never happen now!
                     // printf("node %d with label %d returns because label is negative\n", data.nix, label);
-                    printf("ERROR: Considering inactive node in recenterAndDeactivateClusters! It has label %d\n", data.label);
+                    printf("ERROR: Considering inactive node in recenterAndDeactivateClusters! It has label %lld\n", data.label);
                     return;
                 }
 
@@ -372,7 +371,7 @@ public:
                 const SweepCutData sc = sweepCutPtr[correspondingSweepCutIndex];
 
                 if (clusterId != sc.clusterId) {
-                    printf("ERRORRR!!!! clusterId does not match sweep cut (ix = %d)!\n\t%d is the clusterId, this is the scId: %d\t[sparsity = %f, offset = %d]\n", correspondingSweepCutIndex, clusterId, sc.clusterId, sc.sparsity, sc.offset);
+                    printf("ERRORRR!!!! clusterId does not match sweep cut (ix = %d)!\n\t%d is the clusterId, this is the scId: %lld\t[sparsity = %f, offset = %d]\n", correspondingSweepCutIndex, clusterId, sc.clusterId, sc.sparsity, sc.offset);
                 }
 
                 if(sc.sparsity < sparsity_target && data.offsetInCluster > sc.offset) {
@@ -396,7 +395,7 @@ public:
 
         double* distPtr = thrust::raw_pointer_cast(dist.data());
 
-        const NodeIx numActive = numActiveClusters;
+        // const NodeIx numActive = numActiveClusters;
 
 
         updateLabelLookup();
@@ -410,12 +409,12 @@ public:
             activeNodes(),
             numActiveNodes,
             [clusterDataPtr, uniqueLabelsPtr, distPtr, labelsPtr, labelLookupPtr, walk_threshold, smallestKey] __device__ (NodeData& data) {
-                const int label = data.label;
+                const int64_t label = data.label;
 
                 if (data.label < 0) {
                     // cluster already inactive - this should actually never happen now!
                     // printf("node %d with label %d returns because label is negative\n", data.nix, label);
-                    printf("ERROR: Considering inactive node in recenterAndDeactivateClusters! It has label %d\n", data.label);
+                    printf("ERROR: Considering inactive node in recenterAndDeactivateClusters! It has label %lld\n", data.label);
                     return;
                 }
 
@@ -435,7 +434,7 @@ public:
 
 
                 if (uniqueLabelsPtr[correspondingSweepCutIndex] != label) {
-                    printf("ERROR: label mismatch!! For nix = %d:\t%d != %d\n", data.nix, label, uniqueLabelsPtr[correspondingSweepCutIndex]);
+                    printf("ERROR: label mismatch!! For nix = %d:\t%lld != %d\n", data.nix, label, uniqueLabelsPtr[correspondingSweepCutIndex]);
                 }
 
                 const ClusterData cd = clusterDataPtr[correspondingSweepCutIndex];
@@ -453,7 +452,7 @@ public:
                     // int smallestLabel = uniqueLabelsPtr[0]; // TODO: safe?
 
                     // printf("Deactivating cluster: %d -> %d \t smallest: %d\n", label, smallestLabel - data.label - 1, smallestLabel);
-                    int updatedLabel = smallestLabel - data.label - 1;
+                    int64_t updatedLabel = smallestLabel - data.label - 1;
                     data.label = updatedLabel;
                     labelsPtr[data.nix] = updatedLabel;
                 } else {
@@ -643,12 +642,12 @@ public:
     };
 
 
-    struct DegreeExtractor {
-        __host__ __device__
-        Temp operator()(const NodeData& n) const {
-            return {n.nix, n.degree };
-        }
-    };
+    // struct DegreeExtractor {
+    //     __host__ __device__
+    //     Temp operator()(const NodeData& n) const {
+    //         return {n.nix, n.degree };
+    //     }
+    // };
 
 
     std::vector<EdgeIx> downloadActiveDegrees() {
