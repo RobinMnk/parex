@@ -31,7 +31,7 @@ void nodeDiffKernel_Sparse_WarpParallel(
         const EdgeIx* __restrict__ ranges,
         const NodeIx* __restrict__ degrees,
         NodeData* __restrict__ nodeData,
-        const double* __restrict__ values
+        const uint64_t* __restrict__ packedKeys
 ) {
     constexpr int WARP = 32;
 
@@ -63,8 +63,8 @@ void nodeDiffKernel_Sparse_WarpParallel(
 
     assert(data.nix == i && "nix mismatch!");
 
-    double myVal;
-    if (lane == 0) myVal = __ldg(&values[i]);
+    uint64_t myVal;
+    if (lane == 0) myVal = __ldg(&packedKeys[i]);
     myVal = __shfl_sync(0xffffffff, myVal, 0);
 
 
@@ -86,7 +86,7 @@ void nodeDiffKernel_Sparse_WarpParallel(
 
         if (nbData.label == data.label) {
 
-            const double otherVal = __ldg(&values[neighbor]);
+            const uint64_t otherVal = __ldg(&packedKeys[neighbor]);
 
             // const float otherVal = nbData.rwValue;
 
@@ -95,15 +95,9 @@ void nodeDiffKernel_Sparse_WarpParallel(
                 isBefore = (otherVal < myVal);
             } else {
                 isBefore = (nbData.nix < i);
-                printf("edge %d -> %d: %d\n", nbData.nix, i, isBefore);
             }
 
-            // printf("  Edge %d -> %d adds %d\n", nodeData[i].nix, nbData.nix, isBefore ? 1 : -1);
-
             localContribution += isBefore ? -1 : 1;
-
-            // printf("  Edge %d -> %d adds %d\t[running total: %d]\n", nodeData[i].nix, nbData.nix, isBefore ? 1 : -1, nodeContribution);
-
         }
     }
 
@@ -113,7 +107,7 @@ void nodeDiffKernel_Sparse_WarpParallel(
         nodeData[i].prefixEdgeDiff  = nodeContribution;
         nodeData[i].prefixVolume    = data.activeDegree;
         nodeData[i].offsetInCluster = 1;
-        nodeData[i].rwValue         = static_cast<float>(myVal);
+        // nodeData[i].rwValue         = static_cast<float>(myVal);
     }
 }
 
@@ -148,15 +142,11 @@ void nodeDiffKernel_Sparse(
     const EdgeIx rangeStart = ranges[i];
     const EdgeIx rangeEnd = ranges[i] + degrees[i];
 
-    // if (i == 9) {
-    //     printf("node %d: start = %d, end = %d, deg = %d", data.nix, rangeStart, rangeEnd, data.degree);
-    // }
 
     for (NodeIx j = rangeStart; j < rangeEnd; ++j) {
         const NodeIx neighbor = __ldg(&neighbors[j]);
         if (neighbor == INVALID_EDGE) {
             // inactive edge;
-            // printf("skipping the %dth neighbor.\n", j);
             continue;
         }
 
@@ -367,7 +357,7 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
     int numBlocks     = (gm.n + warpsPerBlock - 1) / warpsPerBlock;
 
 
-    nodeDiffKernel_Sparse<<<numBlocks, threads>>>(
+    nodeDiffKernel_Sparse_WarpParallel<<<numBlocks, threads>>>(
             gm.n,
             thrust::raw_pointer_cast(gm.getNeighbors().data()),
             thrust::raw_pointer_cast(gm.getRanges().data()),
