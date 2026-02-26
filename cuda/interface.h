@@ -35,6 +35,8 @@ public:
     void cutClusters();
     void fixupPartition();
 
+    EdgeIx getNumCutEdges();
+
     void expanderDecomposition();
 
     FinalPartition getFinalPartition();

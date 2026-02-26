@@ -7,7 +7,7 @@
 
 #include "expander_decomposition.h"
 
-#include "utils/timer.h"
+#include "../utils/timer.h"
 #include <iostream>
 
 class ExpanderHierarchy {
@@ -79,7 +79,7 @@ class ExpanderHierarchy {
         }
 
         return {
-            Graph(), // TODO: add map: std::move(edges), std::move(range), part.numClusters(), part.getNumCutEdges()),
+            Graph(std::move(edges), std::move(range), part.numClusters(), part.getNumCutEdges()),
             std::move(part),
             std::move(volumes),
             std::move(cutSizes),
@@ -87,9 +87,24 @@ class ExpanderHierarchy {
         };
     }
 
+
+    template<bool useExternal=false>
+    Partition computeExpanderDecomposition(Graph* graph, Config conf={}) {
+        if constexpr (useExternal) {
+
+
+
+
+        } else {
+            return expanderDecomposition(*graph, conf);
+        }
+    }
+
 public:
+
     explicit ExpanderHierarchy(Graph* gr) : fullGraph{gr} {}
 
+    template<bool useExternal=false>
     void build() {
         Graph* current = fullGraph;
         Config conf{};
@@ -97,7 +112,7 @@ public:
 
         do {
             t.start();
-            Partition ed = expanderDecomposition(*current, conf);
+            Partition ed = computeExpanderDecomposition<useExternal>(current, conf);
 
             if(ed.getNumCutEdges() > 0.95 * current->numEdges) {
                 conf.targetSparsity *= 0.8;

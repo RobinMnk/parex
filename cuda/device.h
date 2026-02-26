@@ -50,6 +50,10 @@ struct CudaDeviceManager::Impl {
         // return pt->numActiveClusters;
     }
 
+    EdgeIx getNumCutEdges() {
+        return pt->numCutEdges(*gm);
+    }
+
     FinalPartition getFinalPartition() {
         return pt->finalizePartition();
     }
@@ -246,19 +250,41 @@ void CudaDeviceManager::Impl::expanderDecomposition() {
     // std::vector<NodeData> nodes(gm->n);
 
     int i = 0;
+    const int MAX_NUM_ITER = 200000;
+    // const int NUM_RW_STEPS = 4;
+
+    // int walkReset = 128;
 
     Timer t;
     t.start();
-    while (i++ < 2000 && pt->numActiveClusters > 0 && pt->numActiveNodes > 100) {
+    while (i++ < MAX_NUM_ITER && pt->numActiveClusters > 0 && pt->numActiveNodes > 0) {
         // printf("==================================================================================== It: %d\n", (i+1));
 
+        // #pragma unroll
+        // for (int x = 0; x < NUM_RW_STEPS; x++) {
+
+        // if (i % walkReset == 0) {
+        //     rw->initRandomWalk(i);
+        //     for (int x = 0; x < walkReset / 4; i++) {
+        //         iterateRandomWalk();
+        //     }
+        //     walkReset *= 2;
+        // }
+
         iterateRandomWalk();
+        // }
+
         computeSweepCuts();
         cutClusters();
     }
+    if (i >= MAX_NUM_ITER) {
+        printf("Not terminating. ABORT.\n");
+    }
+
 
     auto tm = t.timeSeconds();
-    printf("%d iterations with %fs per iteration\n", i, (float) tm / i);
+    // printf("%d iterations with %fs per iteration\n", i, (float) tm / i);
+    printf("iterations: %d\n", i);
 
 
     // printf("Before cutting\n");
@@ -329,6 +355,8 @@ int CudaDeviceManager::getNumClusters() { return impl->getNumClusters(); }
 
 
 FinalPartition CudaDeviceManager::getFinalPartition() { return impl->getFinalPartition(); }
+
+EdgeIx CudaDeviceManager::getNumCutEdges() { return impl->getNumCutEdges(); }
 
 void CudaDeviceManager::updateLabels(std::vector<NodeIx>& nodeLabels, NodeIx activeClusters) { impl->updateLabels(nodeLabels, activeClusters); }
 

@@ -11,7 +11,60 @@ void checkBuildMode() {
     #endif
 }
 
-int main() {
+
+int main(int argc, char* argv[]) {
+    if (argc < 2) {
+        std::cout << "missing arguments. expected <filename> <?seed> <sc_threshold> <rw_threshold>. Exiting." << std::endl;
+    }
+
+    std::string filename = argv[1];
+    if (argc > 2) {
+        randSeed = std::stoull(argv[2]);
+        random_source.seed(randSeed);
+    }
+
+    if (argc > 3) {
+        sc_threshold = std::stof(argv[3]);
+    }
+
+    if (argc > 4) {
+        rw_threshold = std::stof(argv[4]);
+    }
+
+    printf("sparsity: %f\nthreshold: %f\n", sc_threshold, rw_threshold);
+
+    // std::cout << "Reading input graph " << filename << ": " << std::endl;
+    // std::cout.flush();
+    DynamicGraph G_dyn = readDynGraph(filename);
+    Graph G = G_dyn.finalize();
+    // std::cout << "loaded " << G.numNodes << " nodes and " << G.numEdges << " edges\nBegin Expander Decomposition" << std::endl;
+
+    Timer t2;
+    t2.start();
+    CudaDeviceManager cuda;
+    cuda.initialize(G);
+    cuda.expanderDecomposition();
+    // auto pt = cuda.downloadLabels();
+    auto timeMicros = t2.timeMicros();
+    // int numClusters = cuda.getNumClusters();
+    FinalPartition fpt = cuda.getFinalPartition();
+    // printf("Terminated after %fs\t-> %d clusters.\n", tm, fpt.numClusters);
+
+    t2.start();
+    Partition part(&G);
+    std::vector<NodeIx> mod;
+    part.splitByIndices<false, false>(0, fpt.clusterIds, fpt.numClusters, mod);
+
+    EdgeIx cudaCutEdges = cuda.getNumCutEdges();
+
+    printf("time: %lld\nnumClusters: %d\ncutEdges: %d\nnodes: %d\nedges: %d\n", timeMicros, part.numClusters(), part.getNumCutEdges(), G.numNodes, G.numEdges);
+    printf("Cuda Cut Edges: %d\n", cudaCutEdges);
+
+    // printf(" -> Partition has %d clusters and cuts %d edges\t[computed in %fs]", part.numClusters(), part.getNumCutEdges(), t2.timeSeconds());
+}
+
+
+int test() {
     checkBuildMode();
 
     std::cout << "Reading input graph: ";

@@ -79,6 +79,12 @@ void disableEdgesKernel(
 }
 
 
+__host__ __device__
+inline int extractLabel(uint64_t k) {
+    uint32_t orderedLabel = static_cast<uint32_t>(k >> 32);
+    return static_cast<int>(orderedLabel ^ 0x80000000);
+}
+
 struct LabelExtractor {
     __host__ __device__
     inline int operator()(uint64_t k) const {
@@ -107,6 +113,8 @@ class PartitionManager {
     thrust::device_vector<int> labelLookup;
 
     thrust::device_vector<int> temp_keys;
+
+    uint64_t* sortedKeys;
 
 
     // CUB Buffers
@@ -187,7 +195,9 @@ public:
             static_cast<int>(numNodes)
         );
 
-        uint64_t* sortedKeys = keys.Current();
+        sortedKeys = keys.Current();
+
+        // smallestKey = extractLabel(sortByKeys[0]);
 
         auto label_iter_all_clusters = thrust::make_transform_iterator(sortedKeys, LabelExtractor());
 
@@ -201,8 +211,8 @@ public:
         numDisabledNodes = thrust::distance(label_iter_all_clusters, label_iter);
         numActiveNodes = numNodes - numDisabledNodes;
 
-        printf("active Nodes: %d (clusters: %d)\t\tRound time:  %lldms\ttotal time: %lldms\n", numActiveNodes, numActiveClusters, t.timeMillis(), t2.timeMillis());
-        t.start();
+        // printf("active Nodes: %d (clusters: %d)\t\tRound time:  %lldms\ttotal time: %lldms\n", numActiveNodes, numActiveClusters, t.timeMillis(), t2.timeMillis());
+        // t.start();
 
         return label_iter;
     }
@@ -329,12 +339,13 @@ public:
         int* updatedLabelPtr = thrust::raw_pointer_cast(nodeLabels.data());
 
         const NodeIx n = numNodes;
+        const float sparsity_target = sc_threshold;
 
         thrust::for_each_n(
             thrust::device,
             activeNodes(),
             numActiveNodes,
-            [sweepCutPtr, uniqueLabelsPtr, labelLookupPtr, updatedLabelPtr, n] __device__ (NodeData& data) {
+            [sweepCutPtr, uniqueLabelsPtr, labelLookupPtr, updatedLabelPtr, sparsity_target, n] __device__ (NodeData& data) {
                 const int clusterId = data.label;
                 if (clusterId < 0) {
                     // cluster already inactive - this should actually never happen now!
@@ -364,7 +375,7 @@ public:
                     printf("ERRORRR!!!! clusterId does not match sweep cut (ix = %d)!\n\t%d is the clusterId, this is the scId: %d\t[sparsity = %f, offset = %d]\n", correspondingSweepCutIndex, clusterId, sc.clusterId, sc.sparsity, sc.offset);
                 }
 
-                if(sc.sparsity < sc_threshold && data.offsetInCluster > sc.offset) {
+                if(sc.sparsity < sparsity_target && data.offsetInCluster > sc.offset) {
                     // printf("Cluster %d is split into two parts -> new label = %d, because maxLabel = %d\n", data.label, data.label + n + 1, n);
                     int newLabel = clusterId + n + 1;
                     data.label = newLabel;
@@ -377,13 +388,13 @@ public:
         );
     }
 
-    void recenterAndDeactivateClusters(thrust::device_vector<frac_t>& dist) {
+    void recenterAndDeactivateClusters(thrust::device_vector<double>& dist) {
         // subtract average from each (active) node
         const ClusterData* clusterDataPtr = thrust::raw_pointer_cast(clusterSums.data());
         const int* uniqueLabelsPtr = thrust::raw_pointer_cast(activeLabels.data());
         int* labelsPtr = thrust::raw_pointer_cast(nodeLabels.data());
 
-        frac_t* distPtr = thrust::raw_pointer_cast(dist.data());
+        double* distPtr = thrust::raw_pointer_cast(dist.data());
 
         const NodeIx numActive = numActiveClusters;
 
@@ -391,12 +402,14 @@ public:
         updateLabelLookup();
         int* labelLookupPtr = thrust::raw_pointer_cast(labelLookup.data());
 
+        const float walk_threshold = rw_threshold;
+        const uint64_t* smallestKey = sortedKeys;
 
         thrust::for_each_n(
             thrust::device,
             activeNodes(),
             numActiveNodes,
-            [clusterDataPtr, uniqueLabelsPtr, distPtr, labelsPtr, labelLookupPtr, numActive] __device__ (NodeData& data) {
+            [clusterDataPtr, uniqueLabelsPtr, distPtr, labelsPtr, labelLookupPtr, walk_threshold, smallestKey] __device__ (NodeData& data) {
                 const int label = data.label;
 
                 if (data.label < 0) {
@@ -434,9 +447,11 @@ public:
 
                 const float clusterPotential = cd.maxPotential - cd.minPotential;
 
-                if (clusterPotential < rw_threshold || cd.totalElements < 2) {
+                if (clusterPotential < walk_threshold || cd.totalElements < 2) {
                     // this cluster should be deactivated
-                    int smallestLabel = uniqueLabelsPtr[0];
+                    int smallestLabel = extractLabel(smallestKey[0]);
+                    // int smallestLabel = uniqueLabelsPtr[0]; // TODO: safe?
+
                     // printf("Deactivating cluster: %d -> %d \t smallest: %d\n", label, smallestLabel - data.label - 1, smallestLabel);
                     int updatedLabel = smallestLabel - data.label - 1;
                     data.label = updatedLabel;
@@ -445,13 +460,12 @@ public:
                     data.label = correspondingSweepCutIndex;
                     labelsPtr[data.nix] = correspondingSweepCutIndex;
 
-                    const float average = cd.rwSum / static_cast<double>(cd.totalElements);
+                    const double average = cd.rwSum / static_cast<double>(cd.totalElements);
                     distPtr[data.nix] -= average; // TODO: write this diff to any unused field within NodeData! (save random write)
                     data.rwValue -= average; // TODO: this line is just for debugging
                 }
 
                 // printf("moved node %d from cluster %d to cluster %d\n", data.nix, label, data.label);
-
                 // printf("node %d with label %d, old rwValue = %f and offset = %d loaded this cluster data (%d): [average = %f, potential = %f, numElements = %d]\n", data.nix, label, rw, data.offsetInCluster, correspondingSweepCutIndex, average, cd.maxPotential - cd.minPotential, cd.totalElements);
 
             }
@@ -501,6 +515,26 @@ public:
     }
     auto& getNextLabels()  {
         return nodeLabels;
+    }
+
+    EdgeIx numCutEdges(GraphManager& gm) {
+        const NodeIx* neighborsPtr = thrust::raw_pointer_cast(gm.getNeighbors().data());
+
+        auto input_iter_begin = thrust::make_transform_iterator(
+            thrust::make_counting_iterator(0),
+            ActiveEdgeLogic{neighborsPtr}
+        );
+
+        // Calculate the total sum of active edges
+        int total_active = thrust::reduce(
+            thrust::device,
+            input_iter_begin,
+            input_iter_begin + (2 * gm.m),
+            0,                  // Initial value
+            thrust::plus<int>() // Binary operation
+        );
+
+        return gm.m - total_active / 2;
     }
 
 

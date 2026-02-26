@@ -35,8 +35,6 @@ struct NormalDistributionFunctor {
 
     __host__ __device__
     frac_t operator()(const NodeIx idx) const {
-        // 1. Create a unique seed for THIS thread/index
-        // Using a simple hash to combine base_seed and idx is more robust
         unsigned int thread_seed = hash_idx(base_seed ^ idx);
 
         thrust::default_random_engine rng(thread_seed);
@@ -156,14 +154,14 @@ struct ClusterDataReduceOp {
 struct WalkEdgeLogic {
     const NodeIx* __restrict__ neighbors;
     const EdgeIx* __restrict__ activeDegrees;
-    const frac_t* __restrict__ dist;
+    const double* __restrict__ dist;
 
     __device__ __forceinline__
-    float operator()(EdgeIx edgeIdx) const {
+    double operator()(EdgeIx edgeIdx) const {
         const NodeIx tgtNode = __ldg(&neighbors[edgeIdx]);
         if (tgtNode == INVALID_EDGE) {
             // inactive edge
-            return 0.0f;
+            return 0.0;
         }
 
         const EdgeIx nbDeg = __ldg(&activeDegrees[tgtNode]);
@@ -179,9 +177,9 @@ __global__
 void finalizeRandomWalk(
     NodeIx numNodes,
     const EdgeIx* __restrict__ activeDegrees,
-    const frac_t* __restrict__ incoming_sums,
+    const double* __restrict__ incoming_sums,
     const int* __restrict__ labels,
-    frac_t* __restrict__ dist,
+    double* __restrict__ dist,
     NodeData* __restrict__ nodeData,
     uint64_t* __restrict__ packedKeys
 ) {
@@ -194,20 +192,22 @@ void finalizeRandomWalk(
         return;
     }
 
-    const frac_t nodeVal = (incoming_sums[i] * (1.0f - rw_stay)) + (dist[i] * rw_stay);
+    const double nodeVal = (incoming_sums[i] * (1.0f - rw_stay)) + (dist[i] * rw_stay);
+    const float nodeValF = static_cast<float>(nodeVal);
 
     dist[i] = nodeVal;
     nodeData[i].activeDegree = activeDegrees[i];
     nodeData[i].label = label;
     nodeData[i].nix = i;
-    packedKeys[i] = packKey(label, nodeVal);
+    nodeData[i].rwValue = nodeValF;
+    packedKeys[i] = packKey(label, nodeValF);
 }
 
 
 
 class RandomWalkManager {
-    thrust::device_vector<frac_t> dist;
-    thrust::device_vector<frac_t> incomingSums;
+    thrust::device_vector<double> dist;
+    thrust::device_vector<double> incomingSums;
 
     NodeIx numNodes;
     void* d_temp_storage = nullptr;
@@ -216,7 +216,7 @@ class RandomWalkManager {
 
 public:
     explicit RandomWalkManager(NodeIx n) : dist(n), incomingSums(n), numNodes(n) {
-        initRandomWalk(seed);
+        initRandomWalk(randSeed);
         prepare_cub();
     }
 
@@ -237,8 +237,8 @@ public:
         const EdgeIx* rangesPtr = thrust::raw_pointer_cast(gm.getRanges().data());
         const NodeIx* neighborsPtr = thrust::raw_pointer_cast(gm.getNeighbors().data());
         const EdgeIx* activeDegsPtr = thrust::raw_pointer_cast(activeDegrees.data());
-        frac_t* distPtr = thrust::raw_pointer_cast(dist.data());
-        frac_t* incomingSumsPtr = thrust::raw_pointer_cast(incomingSums.data());
+        double* distPtr = thrust::raw_pointer_cast(dist.data());
+        double* incomingSumsPtr = thrust::raw_pointer_cast(incomingSums.data());
         const int* labelsPtr = thrust::raw_pointer_cast(nodeLabels.data());
 
         thrust::counting_iterator<EdgeIx> edgeIndexIter(0);
@@ -300,7 +300,7 @@ public:
     //     return maxLabel;
     // }
 
-    [[nodiscard]] const thrust::device_vector<frac_t>& randomWalkValues() const {
+    [[nodiscard]] const thrust::device_vector<double>& randomWalkValues() const {
         return dist;
     }
 
@@ -332,6 +332,7 @@ private:
         cudaMalloc(&d_temp_storage, temp_storage_bytes);
     }
 
+public:
     void initRandomWalk(unsigned int s) {
         thrust::transform(thrust::make_counting_iterator<NodeIx>(0),
                           thrust::make_counting_iterator(numNodes),

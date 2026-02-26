@@ -26,11 +26,11 @@ using EdgeWeight    = unsigned int;
 using frac_t        = float;
 
 constexpr int threads = 256;
-constexpr unsigned int seed{6523482};
+inline unsigned int randSeed{6582};
 
 constexpr frac_t rw_stay = 0.1;
-constexpr frac_t rw_threshold = 1e-8;
-constexpr float sc_threshold = 0.01;
+inline frac_t rw_threshold = 1e-4;
+inline float sc_threshold = 0.3;
 
 constexpr NodeIx INVALID_EDGE = static_cast<NodeIx>(-1);
 

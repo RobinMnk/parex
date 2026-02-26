@@ -133,7 +133,7 @@ public:
         //        thrust::transform(ranges.begin() + 1, ranges.end(), ranges.begin(), active_degrees.begin(), thrust::minus<int>());
 
         populateNodeLookup(graph.numNodes, 2 * graph.numEdges);
-        std::cout << "Copied Graph to GPU. \t" << neighbors.size() / 2 << " edges copied" << std::endl;
+        // std::cout << "Copied Graph to GPU. \t" << neighbors.size() / 2 << " edges copied" << std::endl;
     }
 
     //    [[nodiscard]] DevGraph getView() const {

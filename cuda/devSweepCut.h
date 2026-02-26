@@ -30,7 +30,7 @@ void nodeDiffKernel_Sparse_WarpParallel(
         const NodeIx* __restrict__ neighbors,
         const EdgeIx* __restrict__ ranges,
         NodeData* __restrict__ nodeData,
-        const frac_t* __restrict__ values
+        const double* __restrict__ values
 ) {
     constexpr int WARP = 32;
 
@@ -60,18 +60,24 @@ void nodeDiffKernel_Sparse_WarpParallel(
 
     if (data.label < 0) return;
 
-    frac_t myVal;
-    if (lane == 0) myVal = __ldg(&values[i]);
-    myVal = __shfl_sync(0xffffffff, myVal, 0);
+    assert(data.nix == i && "nix mismatch!");
+
+    // double myVal;
+    // if (lane == 0) myVal = __ldg(&values[i]);
+    // myVal = __shfl_sync(0xffffffff, myVal, 0);
+
 
     const EdgeIx rangeStart = __ldg(&ranges[i]);
     const EdgeIx rangeEnd   = rangeStart + data.degree;
 
     int localContribution = 0;
 
+    const float myVal = nodeData[i].rwValue;
+
     for (EdgeIx j = rangeStart + lane; j < rangeEnd; j += WARP) {
 
         const NodeIx neighbor = __ldg(&neighbors[j]);
+        printf("skipping the %dth neighbor.\n", j);
         if (neighbor == INVALID_EDGE) continue;
 
         const NodeData nbData = nodeData[neighbor];
@@ -79,16 +85,23 @@ void nodeDiffKernel_Sparse_WarpParallel(
 
         if (nbData.label == data.label) {
 
-            const frac_t otherVal = __ldg(&values[neighbor]);
+            // const double otherVal = __ldg(&values[neighbor]);
+
+            const float otherVal = nbData.rwValue;
 
             bool isBefore;
             if (otherVal != myVal) {
-                isBefore = (otherVal < myVal);
+                isBefore = (otherVal <= myVal);
             } else {
                 isBefore = (neighbor < i);
             }
 
+            printf("  Edge %d -> %d adds %d\n", nodeData[i].nix, nbData.nix, isBefore ? 1 : -1);
+
             localContribution += isBefore ? -1 : 1;
+
+            // printf("  Edge %d -> %d adds %d\t[running total: %d]\n", nodeData[i].nix, nbData.nix, isBefore ? 1 : -1, nodeContribution);
+
         }
     }
 
@@ -98,7 +111,7 @@ void nodeDiffKernel_Sparse_WarpParallel(
         nodeData[i].prefixEdgeDiff  = nodeContribution;
         nodeData[i].prefixVolume    = data.activeDegree;
         nodeData[i].offsetInCluster = 1;
-        nodeData[i].rwValue         = myVal;
+        nodeData[i].rwValue         = static_cast<float>(myVal);
     }
 }
 
@@ -110,7 +123,7 @@ void nodeDiffKernel_Sparse(
         const NodeIx* __restrict__ neighbors,
         const EdgeIx* __restrict__ ranges,
         NodeData* __restrict__ nodeData,
-        const frac_t* __restrict__ values
+        const double* __restrict__ values
 ) {
     NodeIx i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= numNodes) return;
@@ -122,7 +135,7 @@ void nodeDiffKernel_Sparse(
 
     if (data.label < 0) return;
 
-    const frac_t myVal = __ldg(&values[i]);
+    const double myVal = __ldg(&values[i]);
 
     int nodeContribution = 0;
     const EdgeIx rangeStart = ranges[i];
@@ -132,6 +145,7 @@ void nodeDiffKernel_Sparse(
         const NodeIx neighbor = __ldg(&neighbors[j]);
         if (neighbor == INVALID_EDGE) {
             // inactive edge;
+            printf("skipping the %dth neighbor.\n", j);
             continue;
         }
 
@@ -141,7 +155,7 @@ void nodeDiffKernel_Sparse(
 
         // only consider edges that stay within the same cluster
         if (nbData.label == data.label) {
-            const frac_t otherVal = __ldg(&values[neighbor]);
+            const double otherVal = __ldg(&values[neighbor]);
 
             bool isBefore;
             if (otherVal != myVal) {
@@ -208,7 +222,7 @@ public:
     void compute(
         GraphManager& gm,
         PartitionManager& pm,
-        const thrust::device_vector<frac_t> &values
+        const thrust::device_vector<double> &values
     );
 
     cub::DoubleBuffer<uint64_t>& getKeyBuffer() {
@@ -228,7 +242,8 @@ public:
 struct DegreeExtractor {
     __device__ __forceinline__
     EdgeIx operator()(const NodeData& nd) const {
-        return nd.activeDegree;
+        return nd.activeDegree; // TODO which one?
+        // return nd.degree;
     }
 };
 
@@ -291,9 +306,18 @@ struct ReduceOp {
         const EdgeIx edgeDiff = nodeData.prefixEdgeDiff;
         const EdgeIx prefixVol = nodeData.prefixVolume;
 
-        // min(vol, totalVol - vol)
-        const EdgeIx denom = (prefixVol < totalVol - prefixVol) ? prefixVol : (totalVol - prefixVol);
-        const float sparsity  = (denom > 0) ? (static_cast<float>(edgeDiff) / static_cast<float>(denom)) : 2.0f;
+        // 1. Check for underflow to prevent massive denom values
+        const EdgeIx denom = (prefixVol >= totalVol) ? 0 :
+                             (prefixVol < totalVol - prefixVol) ? prefixVol : (totalVol - prefixVol);
+
+        // 2. Use double for the intermediate calculation if your edge counts are high
+        const float sparsity = (denom > 0) ?
+            (static_cast<float>(edgeDiff) / static_cast<float>(denom)) : 2.0f;
+
+        //
+        // // min(vol, totalVol - vol)
+        // const EdgeIx denom = (prefixVol < totalVol - prefixVol) ? prefixVol : (totalVol - prefixVol);
+        // const float sparsity  = (denom > 0) ? (static_cast<float>(edgeDiff) / static_cast<float>(denom)) : 2.0f;
 
         // if (nodeData.label == 316) {
         //     printf("Node %d has label %d at offset %d rwValue = %f, prefixSum = %d and prefixVol = %d -> sparsity: %f, denom = %d\n", nodeData.nix, nodeData.label, nodeData.offsetInCluster, nodeData.rwValue, nodeData.prefixEdgeDiff, nodeData.prefixVolume, sparsity, denom);
@@ -304,7 +328,7 @@ struct ReduceOp {
     }
 };
 
-void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thrust::device_vector<frac_t> &values) {
+void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thrust::device_vector<double> &values) {
 
     /**
      *  STEP 0: Prepare Data
@@ -382,12 +406,14 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
 
     // assert(num == pm.numActiveClusters);
 
-    // std::vector<NodeData> nodes(numNodes);
-    // thrust::device_ptr<NodeData> dev_ptr(partition.Current());
-    // thrust::copy(dev_ptr, dev_ptr + numNodes, nodes.begin());
-    // for (NodeIx i = 0; i < numNodes; i++) {
-    //     printf("Node %d has label %d at offset %d, prefixSum = %d and prefixVol = %d\n", nodes[i].nix, nodes[i].label, nodes[i].offsetInCluster, nodes[i].prefixEdgeDiff, nodes[i].prefixVolume);
-    // }
+    printf("\n\n");
+
+    std::vector<NodeData> nodes(numNodes);
+    thrust::device_ptr<NodeData> dev_ptr(partition.Current());
+    thrust::copy(dev_ptr, dev_ptr + numNodes, nodes.begin());
+    for (NodeIx i = 0; i < numNodes; i++) {
+        printf("Node %d has label %d at offset %d, prefixSum = %d and prefixVol = %d with rwValue = %f\n", nodes[i].nix, nodes[i].label, nodes[i].offsetInCluster, nodes[i].prefixEdgeDiff, nodes[i].prefixVolume, nodes[i].rwValue);
+    }
 
 
     // std::vector<EdgeIx> clusterVolumes(num);
@@ -421,11 +447,11 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
 
     assert(num == num_unique_keys);
 
-    // std::vector<SweepCutData> scs(pm.numActiveClusters);
-    // thrust::copy(sweepCuts.begin(), sweepCuts.begin() + pm.numActiveClusters, scs.begin());
+    std::vector<SweepCutData> scs(pm.numActiveClusters);
+    thrust::copy(sweepCuts.begin(), sweepCuts.begin() + pm.numActiveClusters, scs.begin());
     //
-    // std::vector<int> lbl(pm.numActiveClusters);
-    // thrust::copy(pm.getActiveLabels().begin(), pm.getActiveLabels().begin() + pm.numActiveClusters, lbl.begin());
+    std::vector<int> lbl(pm.numActiveClusters);
+    thrust::copy(pm.getActiveLabels().begin(), pm.getActiveLabels().begin() + pm.numActiveClusters, lbl.begin());
     //
     //
     // for (int i = 0; i < pm.numActiveClusters; i++) {
@@ -438,11 +464,11 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
     // }
     // fflush(stdout);
 
-    // printf("Computed these sweep cuts:\n");
-    // for (auto sc : scs) {
-    //     printf("Cluster: %d, sparsity = %f, offset = %d\n", sc.clusterId, sc.sparsity, sc.offset);
-    // }
-    // fflush(stdout);
+    printf("Computed these sweep cuts:\n");
+    for (auto sc : scs) {
+        printf("Cluster: %d, sparsity = %f, offset = %d\n", sc.clusterId, sc.sparsity, sc.offset);
+    }
+    fflush(stdout);
 
 
 }
