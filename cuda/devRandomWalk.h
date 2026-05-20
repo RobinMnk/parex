@@ -22,8 +22,9 @@
 
 struct NormalDistributionFunctor {
     unsigned int base_seed;
+    const EdgeIx* degrees;
 
-    explicit NormalDistributionFunctor(unsigned int s) : base_seed(s) {}
+    explicit NormalDistributionFunctor(unsigned int s, const EdgeIx* degs) : base_seed(s), degrees(degs) {}
 
     __host__ __device__
     unsigned int hash_idx(unsigned int x) const {
@@ -36,11 +37,14 @@ struct NormalDistributionFunctor {
     __host__ __device__
     frac_t operator()(const NodeIx idx) const {
         unsigned int thread_seed = hash_idx(base_seed ^ idx);
+        const EdgeIx deg = degrees[idx];
+        auto x = sqrt(static_cast<double>(deg));
 
         thrust::default_random_engine rng(thread_seed);
         thrust::normal_distribution<frac_t> dist;
+        thrust::normal_distribution<>::param_type stdev(0.0, x);
 
-        return dist(rng);
+        return dist(rng, stdev);
     }
 
 //     __host__ __device__
@@ -113,6 +117,75 @@ inline uint64_t packKey(int label, float v) {
 //     // Already Pack label and rw value into packedKeys for sorting!!
 //     packedKeys[i] = packKey(data.label, nodeVal);
 // }
+
+
+__global__ void fusedRandomWalk_WarpParallel(
+    NodeIx numNodes,
+    const NodeIx* __restrict__ neighbors,
+    const EdgeIx* __restrict__ ranges,
+    const EdgeIx* __restrict__ activeDegrees,
+    const int* __restrict__ labels,
+    double* __restrict__ dist,        // Acting as both old and new via careful logic
+    double* __restrict__ incomingSums, // Optional: only if you need these values elsewhere
+    NodeData* __restrict__ nodeData,
+    uint64_t* __restrict__ packedKeys,
+    const float rw_stay
+) {
+    const int warpId = (blockIdx.x * blockDim.x + threadIdx.x) / 32;
+    const int lane   = threadIdx.x & 31;
+
+    if (warpId >= numNodes) return;
+    const NodeIx i = warpId;
+
+    // 1. Check label first to avoid unnecessary work
+    const int myLabel = __ldg(&labels[i]);
+    if (myLabel < 0) {
+        if (lane == 0) {
+            nodeData[i].nix = i;
+            nodeData[i].label = myLabel;
+            packedKeys[i] = packKey(myLabel, 0.0f);
+        }
+        return;
+    }
+
+    // 2. Cooperative Gather
+    const EdgeIx start = __ldg(&ranges[i]);
+    const EdgeIx end   = start + __ldg(&activeDegrees[i]); // Using active degree for range
+
+    double local_sum = 0.0;
+    for (EdgeIx j = start + lane; j < end; j += 32) {
+        const NodeIx nb = __ldg(&neighbors[j]);
+        if (nb != INVALID_EDGE) {
+            // Note: We pull from 'dist' which contains the values from the previous iteration
+            const EdgeIx nbDeg = __ldg(&activeDegrees[nb]);
+            if (nbDeg > 0) {
+                local_sum += __ldg(&dist[nb]) / static_cast<double>(nbDeg);
+            }
+        }
+    }
+
+    // 3. Warp Reduction
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        local_sum += __shfl_down_sync(0xffffffff, local_sum, offset);
+    }
+
+    // 4. Finalize and Write-back (Only Lane 0)
+    if (lane == 0) {
+        const double oldVal = dist[i];
+        const double nodeVal = (local_sum * (1.0 - (double)rw_stay)) + (oldVal * (double)rw_stay);
+        const float nodeValF = static_cast<float>(nodeVal);
+
+        // Update all data structures in one pass
+        dist[i] = nodeVal;
+        nodeData[i].activeDegree = __ldg(&activeDegrees[i]);
+        nodeData[i].label = myLabel;
+        nodeData[i].nix = i;
+        nodeData[i].rwValue = nodeValF;
+
+        // Prepare for Sweep Cut sort
+        packedKeys[i] = packKey(myLabel, nodeValF);
+    }
+}
 
 
 struct LabelExtractorRW {
@@ -216,8 +289,8 @@ class RandomWalkManager {
     // int maxLabel{0};
 
 public:
-    explicit RandomWalkManager(NodeIx n) : dist(n), incomingSums(n), numNodes(n) {
-        initRandomWalk(randSeed);
+    explicit RandomWalkManager(NodeIx n, thrust::device_vector<EdgeIx>& activeDegrees) : dist(n), incomingSums(n), numNodes(n) {
+        initRandomWalk(randSeed, activeDegrees);
         prepare_cub();
     }
 
@@ -229,55 +302,83 @@ public:
         return dist;
     }
 
-    void stepFast(GraphManager& gm,
-          cub::DoubleBuffer<NodeData>& partition,
-          cub::DoubleBuffer<uint64_t>& packedKeys,
-          thrust::device_vector<int>& nodeLabels,
-          thrust::device_vector<EdgeIx>& activeDegrees
-    ) {
-        const EdgeIx* rangesPtr = thrust::raw_pointer_cast(gm.getRanges().data());
-        const NodeIx* neighborsPtr = thrust::raw_pointer_cast(gm.getNeighbors().data());
-        const EdgeIx* activeDegsPtr = thrust::raw_pointer_cast(activeDegrees.data());
-        double* distPtr = thrust::raw_pointer_cast(dist.data());
-        double* incomingSumsPtr = thrust::raw_pointer_cast(incomingSums.data());
-        const int* labelsPtr = thrust::raw_pointer_cast(nodeLabels.data());
+void stepFast(
+    GraphManager& gm,
+    cub::DoubleBuffer<NodeData>& partition,
+    cub::DoubleBuffer<uint64_t>& packedKeys,
+    thrust::device_vector<int>& nodeLabels,
+    thrust::device_vector<EdgeIx>& activeDegrees
+) {
+        // Each node is handled by a warp (32 threads)
+        const int warpsPerBlock = threads / 32;
+        const int gridSize = (numNodes + warpsPerBlock - 1) / warpsPerBlock;
 
-        thrust::counting_iterator<EdgeIx> edgeIndexIter(0);
-        WalkEdgeLogic functor{neighborsPtr, activeDegsPtr, distPtr};
-
-        auto transIter = thrust::make_transform_iterator(edgeIndexIter, functor);
-
-        // perform the reduction
-        cub::DeviceSegmentedReduce::Sum(
-            d_temp_storage, temp_storage_bytes,
-            transIter, incomingSumsPtr,
-            static_cast<int>(numNodes), rangesPtr, rangesPtr + 1
-        );
-
-        // Finalize
-        int gridSize = (numNodes + threads - 1) / threads;
-
-        finalizeRandomWalk<<<gridSize, threads, 0, nullptr>>>(
+        fusedRandomWalk_WarpParallel<<<gridSize, threads>>>(
             numNodes,
-            activeDegsPtr,
-            incomingSumsPtr,
-            labelsPtr,
-            distPtr,
+            thrust::raw_pointer_cast(gm.getNeighbors().data()),
+            thrust::raw_pointer_cast(gm.getRanges().data()),
+            thrust::raw_pointer_cast(activeDegrees.data()),
+            thrust::raw_pointer_cast(nodeLabels.data()),
+            thrust::raw_pointer_cast(dist.data()),
+            nullptr, // incomingSumsPtr no longer strictly needed for logic
             partition.Current(),
-            packedKeys.Current()
+            packedKeys.Current(),
+            rw_stay
         );
 
-        // cudaDeviceSynchronize();
-        //
-        // printf("Partition after finalize : %p\n", partition.Current());
-        //
-        // std::vector<NodeData> nodes(numNodes);
-        // thrust::device_ptr<NodeData> dev_ptr(partition.Current());
-        // thrust::copy(dev_ptr, dev_ptr + numNodes, nodes.begin());
-        // for (NodeIx i = 0; i < numNodes; i++) {
-        //     printf("%d: nix = %d, label: %d\n", i, nodes[i].nix, nodes[i].label);
-        // }
+        // No need for sync here; subsequent thrust calls will queue behind this
     }
+
+
+    // void stepFast(GraphManager& gm,
+    //       cub::DoubleBuffer<NodeData>& partition,
+    //       cub::DoubleBuffer<uint64_t>& packedKeys,
+    //       thrust::device_vector<int>& nodeLabels,
+    //       thrust::device_vector<EdgeIx>& activeDegrees
+    // ) {
+    //     const EdgeIx* rangesPtr = thrust::raw_pointer_cast(gm.getRanges().data());
+    //     const NodeIx* neighborsPtr = thrust::raw_pointer_cast(gm.getNeighbors().data());
+    //     const EdgeIx* activeDegsPtr = thrust::raw_pointer_cast(activeDegrees.data());
+    //     double* distPtr = thrust::raw_pointer_cast(dist.data());
+    //     double* incomingSumsPtr = thrust::raw_pointer_cast(incomingSums.data());
+    //     const int* labelsPtr = thrust::raw_pointer_cast(nodeLabels.data());
+    //
+    //     thrust::counting_iterator<EdgeIx> edgeIndexIter(0);
+    //     WalkEdgeLogic functor{neighborsPtr, activeDegsPtr, distPtr};
+    //
+    //     auto transIter = thrust::make_transform_iterator(edgeIndexIter, functor);
+    //
+    //     // perform the reduction
+    //     cub::DeviceSegmentedReduce::Sum(
+    //         d_temp_storage, temp_storage_bytes,
+    //         transIter, incomingSumsPtr,
+    //         static_cast<int>(numNodes), rangesPtr, rangesPtr + 1
+    //     );
+    //
+    //     // Finalize
+    //     int gridSize = (numNodes + threads - 1) / threads;
+    //
+    //     finalizeRandomWalk<<<gridSize, threads, 0, nullptr>>>(
+    //         numNodes,
+    //         activeDegsPtr,
+    //         incomingSumsPtr,
+    //         labelsPtr,
+    //         distPtr,
+    //         partition.Current(),
+    //         packedKeys.Current()
+    //     );
+    //
+    //     // cudaDeviceSynchronize();
+    //     //
+    //     // printf("Partition after finalize : %p\n", partition.Current());
+    //     //
+    //     // std::vector<NodeData> nodes(numNodes);
+    //     // thrust::device_ptr<NodeData> dev_ptr(partition.Current());
+    //     // thrust::copy(dev_ptr, dev_ptr + numNodes, nodes.begin());
+    //     // for (NodeIx i = 0; i < numNodes; i++) {
+    //     //     printf("%d: nix = %d, label: %d\n", i, nodes[i].nix, nodes[i].label);
+    //     // }
+    // }
 
 
 
@@ -345,11 +446,13 @@ private:
     }
 
 public:
-    void initRandomWalk(unsigned int s) {
+    void initRandomWalk(unsigned int s, thrust::device_vector<EdgeIx>& activeDegrees) {
+        const EdgeIx* degreesPtr = thrust::raw_pointer_cast(activeDegrees.data());
+
         thrust::transform(thrust::make_counting_iterator<NodeIx>(0),
                           thrust::make_counting_iterator(numNodes),
                           dist.begin(),
-                          NormalDistributionFunctor(s)
+                          NormalDistributionFunctor(s, degreesPtr)
         );
     }
 };

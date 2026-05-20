@@ -31,24 +31,16 @@ void linkEdges_kernel(
 
     if (nextLabels[u] != nextLabels[v]) return;
 
-    // Direct Hooking Strategy
-    while (true) {
-        NodeIx rootU = parent[u];
-        NodeIx rootV = parent[v];
+    NodeIx pU = parent[u];
+    NodeIx pV = parent[v];
 
-        if (rootU == rootV) break;
-
-        // Always try to make the smaller index the parent
-        NodeIx high = max(rootU, rootV);
-        NodeIx low = min(rootU, rootV);
-
-        // atomicMin returns the OLD value. If we successfully changed it, mark as changed.
-        NodeIx old = atomicMin(&parent[high], low);
-        if (old != low) {
-            if (d_changed) *d_changed = 1;
-            break;
+    if (pU != pV) {
+        NodeIx high = max(pU, pV);
+        NodeIx low = min(pU, pV);
+        // Only one atomic needed to link components
+        if (atomicMin(&parent[high], low) > low) {
+            *d_changed = 1;
         }
-        break;
     }
 }
 
@@ -61,7 +53,7 @@ void compress_kernel(NodeIx* __restrict__ parent, NodeIx numNodes) {
     NodeIx p = parent[i];
     NodeIx gp = parent[p];
     if (p != gp) {
-        parent[i] = gp; // TODO: this race condition makes everything non-deterministic!!!
+        parent[i] = gp; // Benign race condition: multiple threads might write gp
     }
 }
 
@@ -88,10 +80,15 @@ class ConsolidationManager {
     EdgeIx totalEdges;
     thrust::device_vector<NodeIx> parentLabels;
 
-
+    int* d_changed{};
 public:
 
-    explicit ConsolidationManager(NodeIx n, EdgeIx totM) : numNodes(n), totalEdges(totM), parentLabels(n) {}
+    explicit ConsolidationManager(NodeIx n, EdgeIx totM) : numNodes(n), totalEdges(totM), parentLabels(n) {
+        cudaMalloc(&d_changed, sizeof(int));
+    }
+    ~ConsolidationManager() {
+        cudaFree(d_changed);
+    }
 
     void consolidate(GraphManager& gm, cub::DoubleBuffer<NodeData>& partition, thrust::device_vector<int>& nextLabels);
 
@@ -106,15 +103,11 @@ inline void ConsolidationManager::consolidate(GraphManager& gm, cub::DoubleBuffe
     thrust::sequence(thrust::device, parentLabels.begin(), parentLabels.end());
 
     int h_changed = 1;
-    int* d_changed;
-    cudaMalloc(&d_changed, sizeof(int));
-
     int edgeBlocks = (totalEdges + threads - 1) / threads;
     int nodeBlocks = (numNodes + threads - 1) / threads;
 
     while (h_changed) {
-        h_changed = 0;
-        cudaMemcpy(d_changed, &h_changed, sizeof(int), cudaMemcpyHostToDevice);
+        cudaMemsetAsync(d_changed, 0, sizeof(int));
 
         // 1. Hook nodes together
         linkEdges_kernel<<<edgeBlocks, threads>>>(neighborsPtr, nodeLookupPtr, parentsPtr, nextLabelsPtr, totalEdges, d_changed);
@@ -128,12 +121,8 @@ inline void ConsolidationManager::consolidate(GraphManager& gm, cub::DoubleBuffe
         cudaMemcpy(&h_changed, d_changed, sizeof(int), cudaMemcpyDeviceToHost);
     }
 
-    // thrust::device_vector<int> keys(numNodes);
-    // int* keysPtr = thrust::raw_pointer_cast(keys.data());
-
     assignRootAsLabel_kernel<<<nodeBlocks, threads>>>(partition.Current(), parentsPtr, numNodes);
 
-    cudaFree(d_changed);
 }
 
 

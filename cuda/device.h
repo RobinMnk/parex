@@ -29,7 +29,7 @@ struct CudaDeviceManager::Impl {
         gm = std::make_unique<GraphManager>(graph);
         sc = std::make_unique<SweepCutManager>(graph.numNodes);
         pt = std::make_unique<PartitionManager>(*gm, sc->getKeyBuffer());
-        rw = std::make_unique<RandomWalkManager>(graph.numNodes);
+        rw = std::make_unique<RandomWalkManager>(graph.numNodes, pt->getActiveDegrees());
         cm = std::make_unique<ConsolidationManager>(graph.numNodes, 2 * graph.numEdges);
     }
 
