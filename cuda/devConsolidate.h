@@ -7,17 +7,14 @@
 
 #include "types.h"
 #include <thrust/device_vector.h>
-
 #include "devGraph.h"
 
-
-
 __global__
-void linkEdges_kernel(
+inline void linkEdges_kernel(
+    const LabeledNode* __restrict__ nodes,
     const NodeIx* __restrict__ neighbors,
     const NodeIx* __restrict__ nodeLookup,
     NodeIx* __restrict__ parent,
-    const int* __restrict__ nextLabels,
     EdgeIx numEdges,
     int* __restrict__ d_changed
 ) {
@@ -29,7 +26,7 @@ void linkEdges_kernel(
 
     NodeIx u = nodeLookup[edgeIdx];
 
-    if (nextLabels[u] != nextLabels[v]) return;
+    if (nodes[u].clusterId != nodes[v].clusterId) return;
 
     NodeIx pU = parent[u];
     NodeIx pV = parent[v];
@@ -45,7 +42,7 @@ void linkEdges_kernel(
 }
 
 __global__
-void compress_kernel(NodeIx* __restrict__ parent, NodeIx numNodes) {
+inline void compress_kernel(NodeIx* __restrict__ parent, NodeIx numNodes) {
     NodeIx i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= numNodes) return;
 
@@ -59,8 +56,8 @@ void compress_kernel(NodeIx* __restrict__ parent, NodeIx numNodes) {
 
 
 __global__
-void assignRootAsLabel_kernel(
-    NodeData* __restrict__ nodeData,
+inline void assignRootAsLabel_kernel(
+    LabeledNode* __restrict__ nodes,
     const NodeIx* __restrict__ parent,
     NodeIx numNodes
 ) {
@@ -68,8 +65,8 @@ void assignRootAsLabel_kernel(
     if (i >= numNodes) return;
 
     // Only update nodes that are part of an active cluster
-    if (nodeData[i].label >= 0) {
-        nodeData[i].label = static_cast<int>(parent[nodeData[i].nix]);
+    if (nodes[i].clusterId >= 0) {
+        nodes[i].clusterId = static_cast<int>(parent[nodes[i].nix]);
     }
 }
 
@@ -90,27 +87,27 @@ public:
         cudaFree(d_changed);
     }
 
-    void consolidate(GraphManager& gm, cub::DoubleBuffer<NodeData>& partition, thrust::device_vector<int>& nextLabels);
+    void consolidate(GraphManager& gm, thrust::device_vector<LabeledNode>& labeledNodes);
 
 };
 
-inline void ConsolidationManager::consolidate(GraphManager& gm, cub::DoubleBuffer<NodeData>& partition, thrust::device_vector<int>& nextLabels) {
+inline void ConsolidationManager::consolidate(GraphManager& gm, thrust::device_vector<LabeledNode>& labeledNodes) {
     const NodeIx* neighborsPtr = thrust::raw_pointer_cast(gm.getNeighbors().data());
     const NodeIx* nodeLookupPtr = thrust::raw_pointer_cast(gm.getNodeLookup().data());
     NodeIx* parentsPtr = thrust::raw_pointer_cast(parentLabels.data());
-    int* nextLabelsPtr = thrust::raw_pointer_cast(nextLabels.data());
+    LabeledNode* nodes = thrust::raw_pointer_cast(labeledNodes.data());
 
     thrust::sequence(thrust::device, parentLabels.begin(), parentLabels.end());
 
     int h_changed = 1;
-    int edgeBlocks = (totalEdges + threads - 1) / threads;
-    int nodeBlocks = (numNodes + threads - 1) / threads;
+    size_t edgeBlocks = (totalEdges + threads - 1) / threads;
+    size_t nodeBlocks = (numNodes + threads - 1) / threads;
 
     while (h_changed) {
         cudaMemsetAsync(d_changed, 0, sizeof(int));
 
         // 1. Hook nodes together
-        linkEdges_kernel<<<edgeBlocks, threads>>>(neighborsPtr, nodeLookupPtr, parentsPtr, nextLabelsPtr, totalEdges, d_changed);
+        linkEdges_kernel<<<edgeBlocks, threads>>>(nodes, neighborsPtr, nodeLookupPtr, parentsPtr, totalEdges, d_changed);
 
         // 2. Multi-pass compress to flatten trees created in the link step
         // Running this 2-3 times per link significantly speeds up convergence
@@ -121,8 +118,7 @@ inline void ConsolidationManager::consolidate(GraphManager& gm, cub::DoubleBuffe
         cudaMemcpy(&h_changed, d_changed, sizeof(int), cudaMemcpyDeviceToHost);
     }
 
-    assignRootAsLabel_kernel<<<nodeBlocks, threads>>>(partition.Current(), parentsPtr, numNodes);
-
+    assignRootAsLabel_kernel<<<nodeBlocks, threads>>>(nodes, parentsPtr, numNodes);
 }
 
 
