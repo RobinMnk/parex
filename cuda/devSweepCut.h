@@ -16,173 +16,163 @@
 
 #include <cassert>
 
-__inline__ __device__
-int warpReduceSumInt(int val) {
-    #pragma unroll
-    for (int offset = 16; offset > 0; offset >>= 1)
-        val += __shfl_down_sync(0xffffffff, val, offset);
-    return val;
-}
 
 __global__
-void nodeDiffKernel_Sparse_WarpParallel(
-        NodeIx numNodes,
-        const NodeIx* __restrict__ neighbors,
-        const EdgeIx* __restrict__ ranges,
-        const NodeIx* __restrict__ degrees,
-        NodeData* __restrict__ nodeData,
-        const uint64_t* __restrict__ packedKeys
+inline void nodeDiffKernel_Sparse_WarpParallel(
+    NodeIx numActiveNodes,                  // TODO: Active Nodes now!!
+    const NodeIx* __restrict__ activeNodes,
+    const NodeIx* __restrict__ neighbors,
+    const EdgeIx* __restrict__ ranges,
+    const NodeIx* __restrict__ degrees,
+    const NodeIx* __restrict__ clusterDegrees,
+    const int64_t* __restrict__ labels,
+    const uint64_t* __restrict__ packedKeys,
+    const double* __restrict__ dist,
+    NodeData* __restrict__ nodeData
 ) {
-    constexpr int WARP = 32;
+    const unsigned int warpId = (blockIdx.x * blockDim.x + threadIdx.x) / WARP;
+    const unsigned int lane   = threadIdx.x & 31;
+    if (warpId >= numActiveNodes) return;
 
-    const int globalThreadId = blockIdx.x * blockDim.x + threadIdx.x;
-    const int warpId         = globalThreadId / WARP;   // node index
-    const int lane           = threadIdx.x & (WARP - 1);
+    NodeIx nix = 0;
+    uint64_t myKey = 0;
+    int64_t myLabel = 0;
+    EdgeIx start = 0, degree = 0, clusterDegree = 0;
 
-    if (warpId >= numNodes) return;
-
-    const NodeIx i = warpId;
-
-    NodeData data{};
+    // Only Lane 0 issues the memory requests to the uniform addresses
     if (lane == 0) {
-        data = nodeData[i];
-        // assert(data.nix == i && "nix mismatch!");
+        nix             = __ldg(&activeNodes[warpId]);
+        myKey           = __ldg(&packedKeys[warpId]);
+        myLabel         = __ldg(&labels[nix]);
+        start           = __ldg(&ranges[nix]);
+        degree          = __ldg(&degrees[nix]);
+        clusterDegree    = __ldg(&clusterDegrees[nix]);
     }
 
-    const int words = (sizeof(NodeData) + sizeof(int) - 1) / sizeof(int);
-    int* dataWords = reinterpret_cast<int*>(&data);
+    // Broadcast the uniform values to all lanes in 1 clock cycle
+    nix     = __shfl_sync(0xffffffff, nix, 0);
+    myLabel = __shfl_sync(0xffffffff, myLabel, 0);
+    start   = __shfl_sync(0xffffffff, start, 0);
+    degree  = __shfl_sync(0xffffffff, degree, 0);
+
+    const EdgeIx end = start + degree;
+
+    if (myLabel < 0) {
+        printf("ERROR: random walk should not consider inactive nodes now!!\n");
+        return;
+    }
+
+    int32_t nodeContribution = 0;
+    for (EdgeIx j = start + lane; j < end; j += WARP) {
+        const NodeIx nb = __ldg(&neighbors[j]);
+
+        if (nb == INVALID_EDGE) continue;
+
+        const int64_t nbLabel   = __ldg(&labels[nb]);
+        const double nbRwValue  = __ldg(&dist[nb]);
+        // re-computing the key from scratch is much faster than trying to find and load the value from global memory
+        const uint64_t nbKey = packKey(nbLabel, nbRwValue);
+
+        if (nbLabel != myLabel) {
+            printf("ERROR: this edge should have been invalidated: %d -> %d [eix: %d]\n", nix, nb, j);
+        }
+
+        bool isBefore;
+        if (nbKey != myKey) {
+            isBefore = (nbKey < myKey);
+        } else {
+            isBefore = (nb < nix);
+        }
+
+        nodeContribution += isBefore ? -1 : 1;
+    }
 
     #pragma unroll
-    for (int k = 0; k < words; ++k) {
-        int v = (lane == 0) ? dataWords[k] : 0;
-        v = __shfl_sync(0xffffffff, v, 0);
-        dataWords[k] = v;
-    }
-
-    if (data.label < 0) return;
-
-    assert(data.nix == i && "nix mismatch!");
-
-    uint64_t myVal;
-    if (lane == 0) myVal = __ldg(&packedKeys[i]);
-    myVal = __shfl_sync(0xffffffff, myVal, 0);
-
-
-    const EdgeIx rangeStart = __ldg(&ranges[i]);
-    const EdgeIx rangeEnd   = rangeStart + degrees[i];
-
-    int localContribution = 0;
-
-    // const float myVal = nodeData[i].rwValue;
-
-    for (EdgeIx j = rangeStart + lane; j < rangeEnd; j += WARP) {
-
-        const NodeIx neighbor = __ldg(&neighbors[j]);
-        // printf("skipping the %dth neighbor.\n", j);
-        if (neighbor == INVALID_EDGE) continue;
-
-        const NodeData nbData = nodeData[neighbor];
-        // assert(nbData.nix == neighbor && "neighbor nix mismatch!");
-
-        if (nbData.label == data.label) {
-
-            const uint64_t otherVal = __ldg(&packedKeys[neighbor]);
-
-            // const float otherVal = nbData.rwValue;
-
-            bool isBefore;
-            if (otherVal != myVal) {
-                isBefore = (otherVal < myVal);
-            } else {
-                isBefore = (nbData.nix < i);
-            }
-
-            localContribution += isBefore ? -1 : 1;
-        }
-    }
-
-    int nodeContribution = warpReduceSumInt(localContribution);
+    for (int offset = 16; offset > 0; offset >>= 1)
+        nodeContribution += __shfl_down_sync(0xffffffff, nodeContribution, offset);
 
     if (lane == 0) {
-        nodeData[i].prefixEdgeDiff  = nodeContribution;
-        nodeData[i].prefixVolume    = data.activeDegree;
-        nodeData[i].offsetInCluster = 1;
+        nodeData[warpId].nix                = nix;
+        nodeData[warpId].prefixEdgeDiff     = nodeContribution;
+        nodeData[warpId].prefixVolume       = clusterDegree;
+        nodeData[warpId].offsetInCluster    = 1;
         // nodeData[i].rwValue         = static_cast<float>(myVal);
     }
 }
 
 
-
-__global__
-void nodeDiffKernel_Sparse(
-        NodeIx numNodes,
-        const NodeIx* __restrict__ neighbors,
-        const EdgeIx* __restrict__ ranges,
-        const NodeIx* __restrict__ degrees,
-        NodeData* __restrict__ nodeData,
-        const uint64_t* __restrict__ packedKeys
-) {
-    NodeIx i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= numNodes) return;
-
-    // early exit for inactive nodes
-    const NodeData data = nodeData[i];
-
-    if (data.nix != i) {
-        printf("nix mismatch: i = %d but nix = %d\n", i, data.nix);
-    }
-
-    assert(data.nix == i && "nix mismatch!");
-
-    if (data.label < 0) return;
-
-    const uint64_t myKey = __ldg(&packedKeys[i]);
-
-    int nodeContribution = 0;
-    const EdgeIx rangeStart = ranges[i];
-    const EdgeIx rangeEnd = ranges[i] + degrees[i];
-
-
-    for (NodeIx j = rangeStart; j < rangeEnd; ++j) {
-        const NodeIx neighbor = __ldg(&neighbors[j]);
-        if (neighbor == INVALID_EDGE) {
-            // inactive edge;
-            continue;
-        }
-
-        const NodeData nbData = nodeData[neighbor];
-
-        assert(nbData.nix == neighbor && "neighbor nix mismatch!");
-
-        // printf("%d: edge %d [%d]  -->  %d [%d]\n", j, data.nix, data.label, nbData.nix, nbData.label);
-
-        // only consider edges that stay within the same cluster
-        if (nbData.label == data.label) {
-            const uint64_t otherKey = __ldg(&packedKeys[neighbor]);
-
-            bool isBefore;
-            if (otherKey != myKey) {
-                isBefore = (otherKey < myKey);
-            } else {
-                // matching the stable sort
-                isBefore = (neighbor < i);
-            }
-
-            nodeContribution += (isBefore) ? -1 : 1;
-
-            // printf("  %d: Edge %d -> %d adds %d\t[running total: %d]\n", j, nodeData[i].nix, nbData.nix, isBefore ? 1 : -1, nodeContribution);
-        } else {
-            // printf("  WARN: %d:  edge %d -> %d ignored because %d.label = %d but %d.label = %d\n", j, data.nix, nbData.nix, data.nix, data.label, nbData.nix, nbData.label);
-        }
-    }
-
-    // Initialize data fields for the sweep cut
-    nodeData[i].prefixEdgeDiff = nodeContribution;
-    nodeData[i].prefixVolume = data.activeDegree;
-    nodeData[i].offsetInCluster = 1;
-    // nodeData[i].rwValue = myVal;
-}
-// This needs all random walk values done -> has to be computed after!
+//
+//
+// __global__
+// void nodeDiffKernel_Sparse(
+//         NodeIx numNodes,
+//         const NodeIx* __restrict__ neighbors,
+//         const EdgeIx* __restrict__ ranges,
+//         const NodeIx* __restrict__ degrees,
+//         NodeData* __restrict__ nodeData,
+//         const uint64_t* __restrict__ packedKeys
+// ) {
+//     NodeIx i = blockIdx.x * blockDim.x + threadIdx.x;
+//     if (i >= numNodes) return;
+//
+//     // early exit for inactive nodes
+//     const NodeData data = nodeData[i];
+//
+//     if (data.nix != i) {
+//         printf("nix mismatch: i = %d but nix = %d\n", i, data.nix);
+//     }
+//
+//     assert(data.nix == i && "nix mismatch!");
+//
+//     if (data.label < 0) return;
+//
+//     const uint64_t myKey = __ldg(&packedKeys[i]);
+//
+//     int nodeContribution = 0;
+//     const EdgeIx rangeStart = ranges[i];
+//     const EdgeIx rangeEnd = ranges[i] + degrees[i];
+//
+//
+//     for (NodeIx j = rangeStart; j < rangeEnd; ++j) {
+//         const NodeIx neighbor = __ldg(&neighbors[j]);
+//         if (neighbor == INVALID_EDGE) {
+//             // inactive edge;
+//             continue;
+//         }
+//
+//         const NodeData nbData = nodeData[neighbor];
+//
+//         assert(nbData.nix == neighbor && "neighbor nix mismatch!");
+//
+//         // printf("%d: edge %d [%d]  -->  %d [%d]\n", j, data.nix, data.label, nbData.nix, nbData.label);
+//
+//         // only consider edges that stay within the same cluster
+//         if (nbData.label == data.label) {
+//             const uint64_t otherKey = __ldg(&packedKeys[neighbor]);
+//
+//             bool isBefore;
+//             if (otherKey != myKey) {
+//                 isBefore = (otherKey < myKey);
+//             } else {
+//                 // matching the stable sort
+//                 isBefore = (neighbor < i);
+//             }
+//
+//             nodeContribution += (isBefore) ? -1 : 1;
+//
+//             // printf("  %d: Edge %d -> %d adds %d\t[running total: %d]\n", j, nodeData[i].nix, nbData.nix, isBefore ? 1 : -1, nodeContribution);
+//         } else {
+//             // printf("  WARN: %d:  edge %d -> %d ignored because %d.label = %d but %d.label = %d\n", j, data.nix, nbData.nix, data.nix, data.label, nbData.nix, nbData.label);
+//         }
+//     }
+//
+//     // Initialize data fields for the sweep cut
+//     nodeData[i].prefixEdgeDiff = nodeContribution;
+//     nodeData[i].prefixVolume = data.activeDegree;
+//     nodeData[i].offsetInCluster = 1;
+//     // nodeData[i].rwValue = myVal;
+// }
+// // This needs all random walk values done -> has to be computed after!
 
 
 class SweepCutManager {
@@ -193,34 +183,48 @@ class SweepCutManager {
     thrust::device_vector<uint64_t> packedKeysOut;
     cub::DoubleBuffer<uint64_t> packedKeys;
 
+    thrust::device_vector<NodeData> scNodeData1;
+    thrust::device_vector<NodeData> scNodeData2;
+    cub::DoubleBuffer<NodeData> scNodeData;
+
     // CUB Buffers
-    // size_t temp_storage_bytes = 0;
-    // void *d_temp_storage = nullptr;
+    size_t temp_storage_bytes = 0;
+    void *d_temp_storage = nullptr;
 
 
     // Output
-    thrust::device_vector<SweepCutData> sweepCuts;
+    thrust::device_vector<SweepCutData> sweepCuts, sweepCutsBuffer;
 
-    // void initializeCUB(NodeIx n, PartitionManager& pm) {
-    //     cub::DeviceRadixSort::SortPairs(
-    //         nullptr, temp_storage_bytes,
-    //         packedKeys,
-    //         pm.getPartitionView(),
-    //         static_cast<int>(n)
-    //     );
-    //
-    //     cudaMalloc(&d_temp_storage, temp_storage_bytes);
-    // }
+    void initializeCUB(NodeIx n) {
+        cub::DeviceRadixSort::SortPairs(
+            nullptr, temp_storage_bytes,
+            packedKeys,
+            scNodeData,
+            static_cast<int>(n)
+        );
+
+        cudaMalloc(&d_temp_storage, temp_storage_bytes);
+    }
 
 public:
+    size_t numClustersWithCut{0};
+
+
     explicit SweepCutManager(NodeIx n) :
         numNodes(n),
         packedKeysIn(n),
         packedKeysOut(n),
         packedKeys(thrust::raw_pointer_cast(packedKeysIn.data()),
                    thrust::raw_pointer_cast(packedKeysOut.data())),
-        sweepCuts(n)
-    { }
+        scNodeData1(n),
+        scNodeData2(n),
+        scNodeData(thrust::raw_pointer_cast(scNodeData1.data()),
+            thrust::raw_pointer_cast(scNodeData2.data())),
+        sweepCuts(n),
+        sweepCutsBuffer(n)
+    {
+        initializeCUB(n);
+    }
 
     thrust::device_vector<SweepCutData>& getSweepCuts() {
         return sweepCuts;
@@ -228,12 +232,15 @@ public:
 
     void compute(
         GraphManager& gm,
-        PartitionManager& pm,
-        const thrust::device_vector<double> &values
+        PartitionManager& pm
     );
 
     cub::DoubleBuffer<uint64_t>& getKeyBuffer() {
         return packedKeys;
+    }
+
+    cub::DoubleBuffer<NodeData>& getScNodeData() {
+        return scNodeData;
     }
 };
 
@@ -246,13 +253,29 @@ public:
 //     }
 // };
 
-struct DegreeExtractor {
-    __device__ __forceinline__
-    EdgeIx operator()(const NodeData& nd) const {
-        return nd.activeDegree; // TODO which one?
-        // return nd.degree;
+// struct DegreeExtractor {
+//     const EdgeIx* clusterDegrees;
+//
+//     __device__ __forceinline__
+//     EdgeIx operator()(const NodeIx nix) const {
+//         return clusterDegrees[nix]; // TODO which one?
+//         // return nd.degree;
+//     }
+// };
+
+__host__ __device__
+inline label_t extractLabel(const uint64_t key) {
+    const auto orderedLabel = static_cast<uint32_t>(key >> 32);
+    return orderedLabel ^ 0x80000000;
+}
+
+struct LabelExtractor {
+    __host__ __device__
+    int64_t operator()(uint64_t key) const {
+        return extractLabel(key);
     }
 };
+
 
 struct ArgMinOp {
     __host__ __device__
@@ -272,155 +295,184 @@ struct NodeDataScanOp {
     }
 };
 
-struct ReduceOp {
-    const int* labelsPtr;
+struct SweepCutTransform {
+    const NodeData* nodeDataPtr;
     const EdgeIx* clusterVolumesPtr;
-    const int* labelLookupPtr;
-    const int numClusters;
-
-    explicit ReduceOp(const int* labels, const EdgeIx* volumesPtr, const int* lookupPtr, const int num) : labelsPtr(labels), clusterVolumesPtr(volumesPtr), labelLookupPtr(lookupPtr), numClusters{num} {}
+    const uint64_t* packedKeysPtr;
+    size_t numInactive;
 
     __host__ __device__
-    SweepCutData operator()(const NodeData& nodeData) const {
-
-        // const int* it = thrust::lower_bound(
-        //     thrust::seq,
-        //     labelsPtr,
-        //     labelsPtr + numClusters,
-        //     nodeData.label
-        // );
-        // int correspondingIndex = static_cast<int>(it - labelsPtr);
-        //
-        // int comp = labelLookupPtr[nodeData.label];
-        // if (comp != correspondingIndex) {
-        //     printf("ERROR: the lookup failed!! %d != %d\n", comp, correspondingIndex);
-        // }
-        // correspondingIndex = comp;
-
-
-        int correspondingIndex = labelLookupPtr[nodeData.label];
-
-        if (labelsPtr[correspondingIndex] != nodeData.label) {
-            // for (int i = 0; i < numClusters; ++i) {
-            //     printf("%d: cluster label: %d\n", i, labelsPtr[correspondingIndex]);
-            // }
-
-            printf("ERROR: Label-data mismatch!!\tlabelsPtr[correspondingIndex] = %d, correspondingIndex=%d, nodeData.label = %lld, nix=%d\n", labelsPtr[correspondingIndex], correspondingIndex, nodeData.label, nodeData.nix);
-        }
-
-        const EdgeIx totalVol  = clusterVolumesPtr[correspondingIndex];
+    SweepCutData operator()(const size_t idx) const {
+        const NodeData nodeData = nodeDataPtr[idx];
+        const EdgeIx totalVol  = clusterVolumesPtr[idx];
+        const label_t label = extractLabel(packedKeysPtr[numInactive + idx]);
 
         const EdgeIx edgeDiff = nodeData.prefixEdgeDiff;
         const EdgeIx prefixVol = nodeData.prefixVolume;
 
-        // 1. Check for underflow to prevent massive denom values
         const EdgeIx denom = (prefixVol >= totalVol) ? 0 :
                              (prefixVol < totalVol - prefixVol) ? prefixVol : (totalVol - prefixVol);
 
-        // 2. Use double for the intermediate calculation if your edge counts are high
-        const float sparsity = (denom > 0) ?
-            (static_cast<float>(edgeDiff) / static_cast<float>(denom)) : 2.0f;
+        const float sparsity = (denom > 0) ? (static_cast<float>(edgeDiff) / static_cast<float>(denom)) : 2.0f;
 
-        //
-        // // min(vol, totalVol - vol)
-        // const EdgeIx denom = (prefixVol < totalVol - prefixVol) ? prefixVol : (totalVol - prefixVol);
-        // const float sparsity  = (denom > 0) ? (static_cast<float>(edgeDiff) / static_cast<float>(denom)) : 2.0f;
-
-        // if (nodeData.label == 316) {
-        //     printf("Node %d has label %d at offset %d rwValue = %f, prefixSum = %d and prefixVol = %d -> sparsity: %f, denom = %d\n", nodeData.nix, nodeData.label, nodeData.offsetInCluster, nodeData.rwValue, nodeData.prefixEdgeDiff, nodeData.prefixVolume, sparsity, denom);
-        // }
-
-
-        return { nodeData.label, sparsity , nodeData.offsetInCluster };
+        return { label, sparsity , nodeData.offsetInCluster };
     }
 };
 
-void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thrust::device_vector<double> &values) {
+void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm) {
 
     /**
      *  STEP 0: Prepare Data
      */
 
-    auto& partition = pm.getPartitionView();
-
-
-    // std::vector<NodeIx> nodes2(2*gm.m);
-    // thrust::device_ptr<NodeIx> dev_ptr2(gm.getNeighbors().data());
-    // thrust::copy(dev_ptr2, dev_ptr2 + 2*gm.m, nodes2.begin());
-    // for (NodeIx i = 0; i < 2*gm.m; i++) {
-    //     printf("Edge %d: nb = %d\n", i, nodes2[i]);
-    // }
-
-
-    constexpr int WARP = 32;
-    int warpsPerBlock = threads / WARP;                 // e.g. 256 → 8
-    int numBlocks     = (gm.n + warpsPerBlock - 1) / warpsPerBlock;
-
+    const size_t numBlocks = getWarpsPerBlock(gm.n);
 
     nodeDiffKernel_Sparse_WarpParallel<<<numBlocks, threads>>>(
-            gm.n,
+            pm.numActiveNodes,
             thrust::raw_pointer_cast(gm.getNeighbors().data()),
             thrust::raw_pointer_cast(gm.getRanges().data()),
             thrust::raw_pointer_cast(gm.getDegrees().data()),
-            partition.Current(),
+            scNodeData.Current(),
             packedKeys.Current()
     );
 
-    cudaStreamSynchronize(nullptr);
 
     /**
      *  STEP 1: SORT
      */
 
-    auto activeLabelIter = pm.sortByKeys(packedKeys);
-    NodeData* sortedData = pm.activeNodes();
+    cub::DeviceRadixSort::SortPairs(
+        d_temp_storage, temp_storage_bytes,
+        packedKeys,
+        scNodeData,
+        static_cast<int>(pm.numActiveNodes)
+    );
 
+    // this includes nodes that just became inactive in the last iteration. Those have not been removed yet (intentionally, for performance)
+    auto allLabels = thrust::make_transform_iterator(packedKeys.Current(), extractLabel);
+
+    // this now contains only labels of active nodes
+    auto activeLabels = thrust::lower_bound(
+        allLabels,
+        allLabels + pm.numActiveNodes,
+        0 // We are looking for the first element >= 0
+    );
+
+    // the number of elements deactivated in the last round
+    size_t inactiveElements = activeLabels - allLabels;
+    // the number of remaining active nodes
+    pm.numActiveNodes -= inactiveElements;
+
+    auto activeNodeData = scNodeData.Current() + inactiveElements;
+
+    auto inputs_begin = thrust::make_zip_iterator(thrust::make_tuple(
+        activeNodeData,
+        activeLabels
+    ));
+
+    thrust::transform(
+        inputs_begin, inputs_begin + pm.numActiveNodes,
+        pm.getActiveNodes().begin(),
+        [] __device__ (const auto& pair) {
+            return LabeledNode{
+                thrust::get<0>(pair).nix,
+                thrust::get<1>(pair),
+            };
+        }
+    );
 
     /**
      *  STEP 2: SCAN
      * - Perform separate prefix sum on edgeDiff and volume
-     * - save outcome in-place into partition
+     * - save outcome in-place into scNodeData
      */
     thrust::inclusive_scan_by_key(
         thrust::device,
         // Keys
-        activeLabelIter,
-        activeLabelIter + pm.numActiveNodes,
+        activeLabels,
+        activeLabels + pm.numActiveNodes,
         // Values
-        sortedData,      // Input Begin
-        sortedData,      // Output Begin (In-place!)
-        thrust::equal_to<int>(),
+        activeNodeData,      // Input Begin
+        activeNodeData,      // Output Begin (In-place!)
+        thrust::equal_to<label_t>(),
         NodeDataScanOp()
     );
+
 
     /**
      * STEP 3: REDUCE
      */
 
-    // find internal volume of each cluster
-    auto end = thrust::reduce_by_key(
-            thrust::device,
-            // Keys
-            activeLabelIter,
-            activeLabelIter + pm.numActiveNodes,
-            // Values
-            thrust::make_transform_iterator(sortedData, DegreeExtractor()),
-            // Output Label
-            pm.getActiveLabels().begin(),
-            // Output Values
-            pm.getVolumes().begin(),
-            thrust::equal_to<int>(),
-            thrust::plus<>()
+    EdgeIx* clusterDegreesPtr = thrust::raw_pointer_cast(pm.getClusterDegrees().data());
+    auto clusterDegreeExtractor = thrust::make_transform_iterator(
+        pm.getActiveNodes().begin(), [clusterDegreesPtr] __device__ (const LabeledNode lNode) { return clusterDegreesPtr[lNode.nix]; }
     );
 
-    EdgeIx* clusterVolumesPtr = thrust::raw_pointer_cast(pm.getVolumes().data());
-    int* labelsPtr = thrust::raw_pointer_cast(pm.getActiveLabels().data());
-    const int* labelLookupPtr = thrust::raw_pointer_cast(pm.getLabelLookup().data());
+    // find cluster-internal volumes
+    thrust::reduce_by_key(
+        thrust::device,
+        // Keys
+        activeLabels,
+        activeLabels + pm.numActiveNodes,
+        // Values
+        clusterDegreeExtractor,
+        // Output Label
+        pm.getUniqueActiveLabels().begin(),
+        // Output Values
+        pm.getVolumes().begin(),
+        thrust::equal_to<label_t>(),
+        thrust::plus<>()
+    );
 
-    int num = end.second - pm.getVolumes().begin();
 
-    pm.numActiveClusters = num;
-    pm.updateLabelLookup();
+    // find best sweep cut for each cluster
+
+    const EdgeIx* clusterVolumesPtr = thrust::raw_pointer_cast(pm.getVolumes().data());
+    const SweepCutTransform scTransform(activeNodeData, clusterVolumesPtr, packedKeys.Current(), inactiveElements);
+
+    const auto it = thrust::reduce_by_key(
+        thrust::device,
+        // Keys
+        activeLabels,
+        activeLabels + pm.numActiveNodes,
+        // Values
+        thrust::make_transform_iterator(thrust::make_counting_iterator<size_t>(0), scTransform),
+        // Output Label
+        pm.getUniqueActiveLabels().begin(),
+        // Output Values
+        sweepCutsBuffer.begin(),
+        thrust::equal_to<int32_t>(),
+        ArgMinOp()
+    );
+
+    pm.numActiveClusters = static_cast<size_t>(it.first - activeLabels);
+
+
+    // Ignore all sweep Cuts that have a sparsity above the threshold
+    auto end_iter = thrust::copy_if(
+        sweepCutsBuffer.begin(), sweepCutsBuffer.begin() + pm.numActiveClusters,
+        sweepCuts.begin(),
+        [=] __device__ (const SweepCutData& scData) {
+            return scData.sparsity < sc_threshold;
+        }
+    );
+
+    numClustersWithCut = static_cast<size_t>(end_iter - sweepCutsBuffer.begin());
+}
+
+
+
+
+
+    //
+    // EdgeIx* clusterVolumesPtr = thrust::raw_pointer_cast(pm.getVolumes().data());
+    // int* labelsPtr = thrust::raw_pointer_cast(pm.getActiveLabels().data());
+    // const int* labelLookupPtr = thrust::raw_pointer_cast(pm.getLabelLookup().data());
+
+    // int num = end.second - pm.getVolumes().begin();
+    //
+    // pm.numActiveClusters = num;
+    // pm.updateLabelLookup();
 
     // assert(num == pm.numActiveClusters);
 
@@ -445,25 +497,10 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
 
 
 
-    // find best sweep cut for each cluster
-    auto end_pair = thrust::reduce_by_key(
-        thrust::device,
-        // Keys
-        activeLabelIter,
-        activeLabelIter + pm.numActiveNodes,
-        // Values
-        thrust::make_transform_iterator(sortedData, ReduceOp(labelsPtr, clusterVolumesPtr, labelLookupPtr, num)),
-        // Output Label
-            pm.getActiveLabels().begin(),
-        // Output Values
-        sweepCuts.begin(),
-        thrust::equal_to<int>(),
-        ArgMinOp()
-    );
 
-    int num_unique_keys = thrust::distance(pm.getActiveLabels().begin(), end_pair.first);
-
-    assert(num == num_unique_keys);
+    // int num_unique_keys = thrust::distance(pm.getActiveLabels().begin(), end_pair.first);
+    //
+    // assert(num == num_unique_keys);
 
     // std::vector<SweepCutData> scs(pm.numActiveClusters);
     // thrust::copy(sweepCuts.begin(), sweepCuts.begin() + pm.numActiveClusters, scs.begin());
@@ -488,8 +525,6 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const thru
     // }
     // fflush(stdout);
 
-
-}
 
 
 

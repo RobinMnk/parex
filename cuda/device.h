@@ -29,12 +29,12 @@ struct CudaDeviceManager::Impl {
         gm = std::make_unique<GraphManager>(graph);
         sc = std::make_unique<SweepCutManager>(graph.numNodes);
         pt = std::make_unique<PartitionManager>(*gm, sc->getKeyBuffer());
-        rw = std::make_unique<RandomWalkManager>(graph.numNodes, pt->getActiveDegrees());
+        rw = std::make_unique<RandomWalkManager>(graph.numNodes, pt->getClusterDegrees());
         cm = std::make_unique<ConsolidationManager>(graph.numNodes, 2 * graph.numEdges);
     }
 
     void iterateRandomWalk() {
-        rw->stepFast(*gm, pt->getPartitionView(), sc->getKeyBuffer(), pt->getNextLabels(), pt->getActiveDegrees());
+        rw->stepFast(*gm, sc->getScNodeDataBuffer(), sc->getKeyBuffer(), pt->getActiveNodeLabels(), pt->getClusterDegrees());
     }
 
     std::vector<frac_t> readRandomWalkValues() {
@@ -60,16 +60,20 @@ struct CudaDeviceManager::Impl {
 
     std::vector<int> downloadLabels() {
         std::vector<int> labels(gm->n);
-        thrust::copy(pt->getNextLabels().begin(), pt->getNextLabels().end(), labels.begin());
+        thrust::copy(pt->getActiveNodeLabels().begin(), pt->getActiveNodeLabels().end(), labels.begin());
         return labels;
     }
 
     void computeSweepCuts() {
-        sc->compute(*gm, *pt, rw->randomWalkValues());
+        sc->compute(*gm, *pt);
     }
 
     void cutClusters() {
-        pt->cutClusters(sc->getSweepCuts());
+        // TODO: if there are no valid sweep cuts (all above the threshold) -> continue!
+        if (sc->numClustersWithCut == 0) return;
+
+
+        pt->cutClusters(sc->getScNodeData(), sc->getSweepCuts(), sc->numClustersWithCut);
 
         // std::vector<NodeData> nodes(gm->n);
         // thrust::device_ptr<NodeData> dev_ptr(pt->getPartitionView().Current());
@@ -79,7 +83,7 @@ struct CudaDeviceManager::Impl {
         //     printf("Node %d has label %d\n", nodes[i].nix, nodes[i].label);
         // }
 
-        cm->consolidate(*gm, pt->getPartitionView(), pt->getNextLabels());
+        cm->consolidate(*gm, pt->getPartitionView(), pt->getActiveNodeLabels());
 
         // thrust::copy(dev_ptr, dev_ptr + gm->n, nodes.begin());
         // printf("After Consolidate\n");
@@ -117,7 +121,7 @@ struct CudaDeviceManager::Impl {
         NodeIx numActiveClusters = pt->numActiveClusters;
         std::vector<int> clusterIds(numActiveClusters);
         std::vector<SweepCutData> cuts(numActiveClusters);
-        thrust::copy(pt->getActiveLabels().begin(), pt->getActiveLabels().begin() + numActiveClusters, clusterIds.begin());
+        thrust::copy(pt->getUniqueActiveLabels().begin(), pt->getUniqueActiveLabels().begin() + numActiveClusters, clusterIds.begin());
         thrust::copy(sc->getSweepCuts().begin(), sc->getSweepCuts().begin() + numActiveClusters, cuts.begin());
         return {clusterIds, cuts};
     }

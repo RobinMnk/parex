@@ -78,48 +78,32 @@ void disableEdgesKernel(
 }
 
 
-__host__ __device__
-inline int extractLabel(uint64_t k) {
-    uint32_t orderedLabel = static_cast<uint32_t>(k >> 32);
-    return static_cast<int>(orderedLabel ^ 0x80000000);
-}
-
-struct LabelExtractor {
-    __host__ __device__
-    inline int operator()(uint64_t k) const {
-        uint32_t orderedLabel = static_cast<uint32_t>(k >> 32);
-        return static_cast<int>(orderedLabel ^ 0x80000000);
-    }
-};
-
-
-
 class PartitionManager {
     NodeIx numNodes;
     EdgeIx totalEdges;
-    thrust::device_vector<NodeData> partition1;
-    thrust::device_vector<NodeData> partition2;
-    cub::DoubleBuffer<NodeData> partition;
+    // thrust::device_vector<NodeData> partition1;
+    // thrust::device_vector<NodeData> partition2;
+    // cub::DoubleBuffer<NodeData> partition;
 
-    thrust::device_vector<int> nodeLabels;
+    thrust::device_vector<int64_t> nodeLabels;
+    thrust::device_vector<EdgeIx> clusterDegrees;
 
-    thrust::device_vector<EdgeIx> activeDegrees;
+    thrust::device_vector<LabeledNode> activeNodes;
 
-    thrust::device_vector<EdgeIx> activeVolumes;
-    thrust::device_vector<int> activeLabels;
-    thrust::device_vector<ClusterData> clusterSums;
+    thrust::device_vector<int32_t> clusterLabels;
+    thrust::device_vector<EdgeIx> clusterVolumes;
+    thrust::device_vector<ClusterData> clusterData;
 
     thrust::device_vector<int> labelLookup;
-
     thrust::device_vector<int> temp_keys;
 
     uint64_t* sortedKeys;
 
 
     // CUB Buffers
-    size_t tempBytesReduce = 0, tempBytesSort = 0;
+    size_t tempBytesReduce = 0; //, tempBytesSort = 0;
     void *tempStorageReduce = nullptr;
-    void *tempStorageSort = nullptr;
+    // void *tempStorageSort = nullptr;
 
 public:
     NodeIx totalClusters{1}, numActiveClusters{1};
@@ -130,27 +114,43 @@ public:
     explicit PartitionManager(GraphManager& gm, cub::DoubleBuffer<uint64_t>& keys) :
         numNodes(gm.n),
         totalEdges(2*gm.m),
-        partition1(gm.n),
-        partition2(gm.n),
-        partition(thrust::raw_pointer_cast(partition1.data()),
-            thrust::raw_pointer_cast(partition2.data())),
+        // partition1(gm.n),
+        // partition2(gm.n),
+        // partition(thrust::raw_pointer_cast(partition1.data()),
+        //     thrust::raw_pointer_cast(partition2.data())),
         nodeLabels(gm.n, 0),
-        activeDegrees(gm.n),
-        activeVolumes(gm.n, 2 * gm.m),
-        activeLabels(gm.n, 0),
-        clusterSums(gm.n),
+        clusterDegrees(gm.n),
+        activeNodes(gm.n),
+        clusterLabels(gm.n, 0),
+        clusterVolumes(gm.n, 2 * gm.m),
+        clusterData(gm.n),
         labelLookup(2 * gm.n + 1, -1),
         temp_keys(gm.n, 0),
         numActiveNodes{gm.n}
     {
+        auto index_sequence_begin = thrust::make_counting_iterator<NodeIx>(0);
+
         thrust::transform(
-            thrust::make_counting_iterator<NodeIx>(0),
-            thrust::make_counting_iterator(gm.n),
-            partition1.begin(),
-            InitFunctor(thrust::raw_pointer_cast(gm.getRanges().data()))
+            index_sequence_begin,
+            index_sequence_begin + gm.n,
+            activeNodes.begin(),
+            [] __device__ (const NodeIx idx) -> LabeledNode {
+                return LabeledNode{
+                    idx, 0
+                };
+            }
         );
+
+
+        // thrust::sequence(activeNodes.begin(), activeNodes.end()); // initialize all node indices as active [0,1,2,3,...]
+        // thrust::transform(
+        //     thrust::make_counting_iterator<NodeIx>(0),
+        //     thrust::make_counting_iterator(gm.n),
+        //     partition1.begin(),
+        //     InitFunctor(thrust::raw_pointer_cast(gm.getRanges().data()))
+        // );
         auto& ranges = gm.getRanges();
-        thrust::transform(ranges.begin() + 1, ranges.end(), ranges.begin(), activeDegrees.begin(), thrust::minus<int>());
+        thrust::transform(ranges.begin() + 1, ranges.end(), ranges.begin(), clusterDegrees.begin(), thrust::minus<NodeIx>());
 
 
         const EdgeIx* rangesPtr = thrust::raw_pointer_cast(gm.getRanges().data());
@@ -164,7 +164,7 @@ public:
         cub::DeviceSegmentedReduce::Sum(
                 nullptr, tempBytesReduce,
                 input_iter,
-                thrust::raw_pointer_cast(activeDegrees.data()),
+                thrust::raw_pointer_cast(clusterDegrees.data()),
                 static_cast<int>(numNodes),
                 rangesPtr,
                 rangesPtr + 1
@@ -172,56 +172,61 @@ public:
 
         cudaMalloc(&tempStorageReduce, tempBytesReduce);
 
-        cub::DeviceRadixSort::SortPairs(
-            nullptr, tempBytesSort,
-            keys,
-            partition,
-            static_cast<int>(numNodes)
-        );
-
-        cudaMalloc(&tempStorageSort, tempBytesSort);
+        // cub::DeviceRadixSort::SortPairs(
+        //     nullptr, tempBytesSort,
+        //     keys,
+        //     partition,
+        //     static_cast<int>(numNodes)
+        // );
+        //
+        // cudaMalloc(&tempStorageSort, tempBytesSort);
 
         t.start();
         t2.start();
     }
 
 
-    thrust::transform_iterator<LabelExtractor, unsigned long long*> sortByKeys(cub::DoubleBuffer<uint64_t>& keys) {
+    void sortByKeys(cub::DoubleBuffer<uint64_t>& keys) {
         cub::DeviceRadixSort::SortPairs(
             tempStorageSort, tempBytesSort,
             keys,
             partition,
-            static_cast<int>(numNodes)
+            static_cast<int>(numActiveNodes)
         );
 
         sortedKeys = keys.Current();
 
         // smallestKey = extractLabel(sortByKeys[0]);
 
-        auto label_iter_all_clusters = thrust::make_transform_iterator(sortedKeys, LabelExtractor());
-
-        auto label_iter = thrust::find_if(
-            thrust::device,
-            label_iter_all_clusters,
-            label_iter_all_clusters + numNodes,
-            [] __device__ (int label) { return label >= 0; }
-        );
-
-        numDisabledNodes = thrust::distance(label_iter_all_clusters, label_iter);
-        numActiveNodes = numNodes - numDisabledNodes;
-
-        // printf("active Nodes: %d (clusters: %d)\t\tRound time:  %lldms\ttotal time: %lldms\n", numActiveNodes, numActiveClusters, t.timeMillis(), t2.timeMillis());
-        // t.start();
-
-        return label_iter;
+        // auto label_iter_all_clusters = thrust::make_transform_iterator(sortedKeys, LabelExtractor());
+        //
+        // auto label_iter = thrust::find_if(
+        //     thrust::device,
+        //     label_iter_all_clusters,
+        //     label_iter_all_clusters + numNodes,
+        //     [] __device__ (int label) { return label >= 0; }
+        // );
+        //
+        // numDisabledNodes = thrust::distance(label_iter_all_clusters, label_iter);
+        // numActiveNodes = numNodes - numDisabledNodes;
+        //
+        // // printf("active Nodes: %d (clusters: %d)\t\tRound time:  %lldms\ttotal time: %lldms\n", numActiveNodes, numActiveClusters, t.timeMillis(), t2.timeMillis());
+        // // t.start();
+        //
+        // return label_iter;
     }
 
-    NodeData* activeNodes() {
-        return partition.Current() + numDisabledNodes;
+    // NodeData* activeNodes() {
+    //     return partition.Current() + numDisabledNodes;
+    // }
+
+
+    thrust::device_vector<LabeledNode>& getActiveNodes() {
+        return activeNodes;
     }
 
-    thrust::device_vector<int>& getActiveLabels() {
-        return activeLabels;
+    thrust::device_vector<label_t>& getUniqueActiveLabels() {
+        return clusterLabels;
     }
 
 
@@ -331,57 +336,74 @@ public:
         return aem;
     }
 
-    void cutClusters(thrust::device_vector<SweepCutData>& sweepCuts) {
-        SweepCutData* sweepCutPtr = thrust::raw_pointer_cast(sweepCuts.data());
-        const int* uniqueLabelsPtr = thrust::raw_pointer_cast(activeLabels.data());
-        int* labelLookupPtr = thrust::raw_pointer_cast(labelLookup.data());
-        int* updatedLabelPtr = thrust::raw_pointer_cast(nodeLabels.data());
+    void cutClusters(
+        cub::DoubleBuffer<NodeData>& scNodeData,
+        const thrust::device_vector<SweepCutData>& sweepCuts,
+        size_t numClusters
+    ) {
+        const SweepCutData* sweepCutPtr = thrust::raw_pointer_cast(sweepCuts.data());
+        const NodeData* scNodeDataPtr = scNodeData.Current();
+        LabeledNode* labeledNodesPtr = thrust::raw_pointer_cast(activeNodes.data());
 
         const NodeIx n = numNodes;
         const float sparsity_target = sc_threshold;
 
         thrust::for_each_n(
             thrust::device,
-            activeNodes(),
+            thrust::make_counting_iterator(0),
             numActiveNodes,
-            [sweepCutPtr, uniqueLabelsPtr, labelLookupPtr, updatedLabelPtr, sparsity_target, n] __device__ (NodeData& data) {
-                const int clusterId = data.label;
-                if (clusterId < 0) {
+            [sweepCutPtr, scNodeDataPtr, labeledNodesPtr, sparsity_target, n, numClusters] __device__ (int idx) {
+                const NodeData& scNode = scNodeDataPtr[idx];
+                LabeledNode& lNode = labeledNodesPtr[idx];
+
+                if (lNode.clusterId < 0) {
                     // cluster already inactive - this should actually never happen now!
-                    // printf("node %d with label %d returns because label is negative\n", data.nix, label);
-                    printf("ERROR: Considering inactive node in recenterAndDeactivateClusters! It has label %lld\n", data.label);
+                    printf("ERROR: Considering inactive node in recenterAndDeactivateClusters! It has label %d\n", lNode.clusterId);
                     return;
                 }
 
-                // const int* it = thrust::lower_bound(
-                //     thrust::seq,
-                //     uniqueLabelsPtr,
-                //     uniqueLabelsPtr + numActive,
-                //     clusterId
-                // );
-                //
+                const SweepCutData* sc = thrust::lower_bound(
+                    thrust::seq,
+                    sweepCutPtr,
+                    sweepCutPtr + numClusters,
+                    lNode.clusterId,
+                    [=] __device__ (const SweepCutData& element, label_t target) {
+                        return element.clusterId < target;
+                    }
+                );
+
+                if (sc != sweepCutPtr + numClusters) {
+                    // the sparsity of this sweepCut was above the threshold so it was removed -> nothing to do
+                    return;
+                }
+
                 // int correspondingSweepCutIndex = static_cast<int>(it - uniqueLabelsPtr);
 
-                int correspondingSweepCutIndex = labelLookupPtr[clusterId];
+                // int correspondingSweepCutIndex = labelLookupPtr[clusterId];
 
-                if (clusterId != uniqueLabelsPtr[correspondingSweepCutIndex]) {
-                    printf("ERRORRR!!!! clusterId does not match unique label! (clusterId = %d != %d = index\n", clusterId, correspondingSweepCutIndex);
+                // if (lNode.clusterId != uniqueLabelsPtr[correspondingSweepCutIndex]) {
+                //     printf("ERRORRR!!!! clusterId does not match unique label! (clusterId = %d != %d = index\n", lNode.clusterId, correspondingSweepCutIndex);
+                // }
+
+                // const SweepCutData sc = sweepCutPtr[correspondingSweepCutIndex];
+
+                if (lNode.clusterId != sc->clusterId) {
+                    printf("ERRORRR!!!! clusterId does not match sweep cut!\n\t%d is the clusterId, this is the scId: %d\t[sparsity = %f, offset = %d]\n", lNode.clusterId, sc->clusterId, sc->sparsity, sc->offset);
                 }
 
-                const SweepCutData sc = sweepCutPtr[correspondingSweepCutIndex];
+                if (sc->sparsity >= sparsity_target) {
+                    printf("ERRORRR!!!! cluster should have been removed:\t[sparsity = %f >= = %f]\n", sc->sparsity, sparsity_target);
 
-                if (clusterId != sc.clusterId) {
-                    printf("ERRORRR!!!! clusterId does not match sweep cut (ix = %d)!\n\t%d is the clusterId, this is the scId: %lld\t[sparsity = %f, offset = %d]\n", correspondingSweepCutIndex, clusterId, sc.clusterId, sc.sparsity, sc.offset);
                 }
 
-                if(sc.sparsity < sparsity_target && data.offsetInCluster > sc.offset) {
+                if(scNode.offsetInCluster > sc->offset) {
                     // printf("Cluster %d is split into two parts -> new label = %d, because maxLabel = %d\n", data.label, data.label + n + 1, n);
-                    int newLabel = clusterId + n + 1;
-                    data.label = newLabel;
-                    updatedLabelPtr[data.nix] = newLabel;
+                    lNode.clusterId = lNode.clusterId + static_cast<label_t>(n) + 1;
+
+                    // data.label = newLabel;
+                    // updatedLabelPtr[data.nix] = newLabel;
                     // labelLookupPtr[newLabel] = correspondingSweepCutIndex; // this does not work unfortunately
-                } else {
-                    updatedLabelPtr[data.nix] = clusterId;
+                    // updatedLabelPtr[data.nix] = clusterId;
                 }
             }
         );
@@ -512,8 +534,8 @@ public:
     auto& getLabelLookup() const  {
         return labelLookup;
     }
-    auto& getNextLabels()  {
-        return nodeLabels;
+    auto& getActiveNodeLabels()  {
+        return activeLabels;
     }
 
     EdgeIx numCutEdges(GraphManager& gm) {
@@ -554,7 +576,7 @@ public:
             tempStorageReduce,
             tempBytesReduce,
             input_iter,
-            thrust::raw_pointer_cast(activeDegrees.data()),
+            thrust::raw_pointer_cast(clusterDegrees.data()),
             static_cast<int>(numNodes),
             rangesPtr,
             rangesPtr + 1,
@@ -609,8 +631,8 @@ public:
         partition.selector ^= 1;
     }
 
-    thrust::device_vector<EdgeIx>& getActiveDegrees() {
-        return activeDegrees;
+    thrust::device_vector<EdgeIx>& getClusterDegrees() {
+        return clusterDegrees;
     }
 
 
@@ -619,7 +641,7 @@ public:
     }
 
     thrust::device_vector<EdgeIx>& getVolumes() {
-        return activeVolumes;
+        return clusterVolumes;
     }
 
     void print(int numUnique, thrust::device_vector<int>& uniqueLabels) {
@@ -652,7 +674,7 @@ public:
 
     std::vector<EdgeIx> downloadActiveDegrees() {
         std::vector<EdgeIx> degrees(numNodes);
-        thrust::copy(activeDegrees.begin(), activeDegrees.end(), degrees.begin());
+        thrust::copy(clusterDegrees.begin(), clusterDegrees.end(), degrees.begin());
         return degrees;
     }
 

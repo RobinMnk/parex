@@ -26,31 +26,59 @@ using EdgeWeight    = unsigned int;
 using frac_t        = float;
 
 constexpr int threads = 256;
+constexpr int WARP = 32;
+constexpr int warpsPerBlock = threads / WARP;
+
+inline unsigned int getWarpsPerBlock(unsigned int n) {
+    return (n + warpsPerBlock - 1) / warpsPerBlock;
+}
+
+
 inline unsigned int randSeed{6582};
 
-constexpr frac_t rw_stay = 0.1;
+constexpr double rw_stay = 0.1;
 inline frac_t rw_threshold = 1e-4;
 inline float sc_threshold = 0.3;
 
 constexpr NodeIx INVALID_EDGE = static_cast<NodeIx>(-1);
 
+
+using label_t = int32_t;
+
 struct SweepCutData {
-    int64_t clusterId;
+    label_t clusterId;
     float sparsity;
     NodeIx offset;
 };
 
+struct LabeledNode {
+    NodeIx nix;
+    label_t clusterId;
+};
+
 struct NodeData {
     NodeIx nix;
-    EdgeIx activeDegree;
-    int64_t label;  // a negative label represents inactive cluster
+    // EdgeIx activeDegree;
+    // int64_t label;  // a negative label represents inactive cluster
 
-    float rwValue;
+    // float rwValue;
     EdgeIx prefixVolume;
     int32_t prefixEdgeDiff;
     NodeIx offsetInCluster;
 };
 
+
+
+// struct NodeData {
+//     NodeIx nix;
+//     EdgeIx activeDegree;
+//     int64_t label;  // a negative label represents inactive cluster
+//
+//     // float rwValue;
+//     EdgeIx prefixVolume;
+//     int32_t prefixEdgeDiff;
+//     NodeIx offsetInCluster;
+// };
 
 struct AllSweepCuts {
     std::vector<int> clusterIds;
