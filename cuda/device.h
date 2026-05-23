@@ -83,7 +83,7 @@ struct CudaDeviceManager::Impl {
         //     printf("Node %d has label %d\n", nodes[i].nix, nodes[i].label);
         // }
 
-        cm->consolidate(*gm, pt->getPartitionView(), pt->getActiveNodeLabels());
+        cm->consolidate(*gm, pt->getActiveNodes(), pt->numActiveNodes);
 
         // thrust::copy(dev_ptr, dev_ptr + gm->n, nodes.begin());
         // printf("After Consolidate\n");

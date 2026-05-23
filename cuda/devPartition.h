@@ -377,16 +377,6 @@ public:
                     return;
                 }
 
-                // int correspondingSweepCutIndex = static_cast<int>(it - uniqueLabelsPtr);
-
-                // int correspondingSweepCutIndex = labelLookupPtr[clusterId];
-
-                // if (lNode.clusterId != uniqueLabelsPtr[correspondingSweepCutIndex]) {
-                //     printf("ERRORRR!!!! clusterId does not match unique label! (clusterId = %d != %d = index\n", lNode.clusterId, correspondingSweepCutIndex);
-                // }
-
-                // const SweepCutData sc = sweepCutPtr[correspondingSweepCutIndex];
-
                 if (lNode.clusterId != sc->clusterId) {
                     printf("ERRORRR!!!! clusterId does not match sweep cut!\n\t%d is the clusterId, this is the scId: %d\t[sparsity = %f, offset = %d]\n", lNode.clusterId, sc->clusterId, sc->sparsity, sc->offset);
                 }
@@ -398,12 +388,9 @@ public:
 
                 if(scNode.offsetInCluster > sc->offset) {
                     // printf("Cluster %d is split into two parts -> new label = %d, because maxLabel = %d\n", data.label, data.label + n + 1, n);
-                    lNode.clusterId = lNode.clusterId + static_cast<label_t>(n) + 1;
+                    lNode.clusterId = lNode.clusterId + static_cast<label_t>(n) + 1; // TODO
 
-                    // data.label = newLabel;
-                    // updatedLabelPtr[data.nix] = newLabel;
-                    // labelLookupPtr[newLabel] = correspondingSweepCutIndex; // this does not work unfortunately
-                    // updatedLabelPtr[data.nix] = clusterId;
+                    // TODO: use max label not node id!!!!
                 }
             }
         );

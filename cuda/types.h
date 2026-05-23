@@ -5,19 +5,12 @@
 #ifndef PAREX_TYPES_H
 #define PAREX_TYPES_H
 
+#include <thrust/device_vector.h>
+
 #include "core/definitions.h"
-//
-//struct NodeData {
-//    NodeIx nix;
-//    NodeIx label;
-//    EdgeIx activeDegree;
-//    NodeIx rangeStart;
-//
-//    EdgeIx degree;
-//    int edgeDiff;
-//    uint32_t padding[2]; // Padding
-//    // Potentially: volume of cluster (probably needs remaining uint32_t)
-//};
+
+template<typename T>
+using dVec = thrust::device_vector<T>;
 
 
 #endif //PAREX_TYPES_H
