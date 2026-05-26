@@ -20,12 +20,12 @@
 
 
 struct NormalDistributionFunctor {
-    unsigned int base_seed;
-    const EdgeIx* degrees;
+    unsigned int base_seed{10};
+    const NodeIx* degrees{nullptr};
 
-    explicit NormalDistributionFunctor(unsigned int s, const EdgeIx* degs) : base_seed(s), degrees(degs) {}
+    explicit NormalDistributionFunctor(unsigned int s, const NodeIx* degs) : base_seed(s), degrees(degs) {}
 
-    __host__ __device__
+    __device__
     unsigned int hash_idx(unsigned int x) const {
         x = ((x >> 16) ^ x) * 0x45d9f3b;
         x = ((x >> 16) ^ x) * 0x45d9f3b;
@@ -33,9 +33,9 @@ struct NormalDistributionFunctor {
         return x;
     }
 
-    __host__ __device__
+    __device__
     frac_t operator()(const NodeIx idx) const {
-        unsigned int thread_seed = hash_idx(base_seed ^ idx);
+        const unsigned int thread_seed = hash_idx(base_seed ^ idx);
         const EdgeIx deg = degrees[idx];
         auto x = sqrt(static_cast<double>(deg));
 
@@ -46,7 +46,6 @@ struct NormalDistributionFunctor {
         return dist(rng, stdev);
     }
 };
-
 
 __device__
 inline uint64_t packKey(const uint32_t label, const float v) {
@@ -110,7 +109,7 @@ inline uint64_t packKey(const uint32_t label, const float v) {
 
 
 __global__
-inline void fusedRandomWalk_WarpParallel(
+void fusedRandomWalk_WarpParallel(
     NodeIx numNodes,
     const LabeledNode* __restrict__ activeNodes,
     const NodeIx* __restrict__ neighbors,
@@ -119,7 +118,6 @@ inline void fusedRandomWalk_WarpParallel(
     const EdgeIx* __restrict__ clusterDegrees,
     const double* __restrict__ dist,
     double* __restrict__ new_dist,
-    // NodeData* __restrict__ nodeData,
     uint64_t* __restrict__ packedKeys
 ) {
     const size_t warpId = (blockIdx.x * blockDim.x + threadIdx.x) / WARP;
@@ -157,7 +155,7 @@ inline void fusedRandomWalk_WarpParallel(
     for (EdgeIx j = start + lane; j < end; j += WARP) {
         const NodeIx nb = __ldg(&neighbors[j]);
 
-        if (nb == INVALID_EDGE) continue;
+        if (nb == INVALID_EDGE) continue; // this skips edges between different clusters
 
         const EdgeIx nbDeg = __ldg(&clusterDegrees[nb]);
         if (nbDeg <= 0) {
@@ -185,13 +183,13 @@ inline void fusedRandomWalk_WarpParallel(
         // nodeData[warpId].nix = nix;
         // nodeData[warpId].rwValue = nodeValF;
 
-        if (myLabel > 4294967295) {
-            printf("ERROR: label-overflow! We have %lld\n", myLabel);
-        }
+        // if (myLabel > 4294967295) {
+        //     printf("ERROR: label-overflow! We have %lld\n", myLabel);
+        // }
 
         // Prepare for Sweep Cut sort
         // TODO: needs that myLabel fits in a uint32_t, i.e. is less than 4.294.967.295
-        packedKeys[warpId] = packKey(myLabel, nodeVal);
+        packedKeys[warpId] = packKey(myLabel, static_cast<float>(nodeVal));
     }
 }
 
@@ -203,33 +201,15 @@ inline void fusedRandomWalk_WarpParallel(
 //     }
 // };
 
-struct ClusterData {
-    float rwSum;
-    float maxPotential;
-    float minPotential;
-    NodeIx totalElements;
-};
 
-struct ClusterDataExtractorRW {
-    __device__
-    inline ClusterData operator()(const NodeData& nodeData) const {
-        const float rwValue = nodeData.rwValue;
-        return {rwValue, rwValue, rwValue, 1};
-    }
-};
+// struct ClusterDataExtractorRW {
+//     __device__
+//     inline ClusterData operator()(const NodeData& nodeData) const {
+//         const float rwValue = nodeData.rwValue;
+//         return {rwValue, rwValue, rwValue, 1};
+//     }
+// };
 
-
-struct ClusterDataReduceOp {
-    __host__ __device__
-    ClusterData operator()(const ClusterData& a, const ClusterData& b) const {
-        return {
-            a.rwSum + b.rwSum,
-            a.maxPotential > b.maxPotential ? a.maxPotential : b.maxPotential,
-            a.minPotential < b.minPotential ? a.minPotential : b.minPotential,
-            a.totalElements + b.totalElements
-        };
-    }
-};
 
 //
 // struct WalkEdgeLogic {
@@ -288,8 +268,9 @@ struct ClusterDataReduceOp {
 
 
 class RandomWalkManager {
-    thrust::device_vector<double> dist;
-    thrust::device_vector<double> incomingSums;
+    thrust::device_vector<double> dist1;
+    thrust::device_vector<double> dist2;
+    cub::DoubleBuffer<double> dist;
 
     NodeIx numNodes;
     void* d_temp_storage = nullptr;
@@ -297,8 +278,13 @@ class RandomWalkManager {
     // int maxLabel{0};
 
 public:
-    explicit RandomWalkManager(NodeIx n, thrust::device_vector<EdgeIx>& activeDegrees) : dist(n), incomingSums(n), numNodes(n) {
-        initRandomWalk(randSeed, activeDegrees);
+    explicit RandomWalkManager(GraphManager& gm) :
+        dist1(gm.n), dist2(gm.n),
+        dist(thrust::raw_pointer_cast(dist1.data()),
+               thrust::raw_pointer_cast(dist2.data())),
+        numNodes(gm.n)
+    {
+        initRandomWalk(gm, randSeed);
         // prepare_cub();
     }
 
@@ -306,32 +292,34 @@ public:
         if (d_temp_storage) cudaFree(d_temp_storage);
     }
 
-    auto& getValues() {
-        return dist;
+    double* getValues() {
+        return dist.Current();
     }
 
     void stepFast(
         GraphManager& gm,
-        cub::DoubleBuffer<NodeData>& scNodeData,
+        thrust::device_vector<LabeledNode>& nodes,
         cub::DoubleBuffer<uint64_t>& packedKeys,
-        thrust::device_vector<int>& nodeLabels,
-        thrust::device_vector<EdgeIx>& activeDegrees,
-        unsigned int numActiveNodes
+        thrust::device_vector<EdgeIx>& allInternalDegrees,
+        NodeIx numActiveNodes
     ) {
-        const unsigned int gridSize = getWarpsPerBlock(numActiveNodes);
+        const size_t gridSize = getGridSize(numActiveNodes);
 
         fusedRandomWalk_WarpParallel<<<gridSize, threads>>>(
             numActiveNodes,
+            thrust::raw_pointer_cast(nodes.data()),
             thrust::raw_pointer_cast(gm.getNeighbors().data()),
             thrust::raw_pointer_cast(gm.getRanges().data()),
-            thrust::raw_pointer_cast(activeDegrees.data()),
-            thrust::raw_pointer_cast(nodeLabels.data()),
-            thrust::raw_pointer_cast(dist.data()),
-            nullptr, // incomingSumsPtr no longer strictly needed for logic
-            scNodeData.Current(),
+            thrust::raw_pointer_cast(gm.getDegrees().data()),
+            thrust::raw_pointer_cast(allInternalDegrees.data()),
+            dist.Current(),
+            dist.Alternate(),
             packedKeys.Current()
         );
+
+        dist.selector ^= 1;
     }
+
 
 
     // void stepFast(GraphManager& gm,
@@ -417,13 +405,11 @@ public:
     //     return maxLabel;
     // }
 
-    [[nodiscard]] const thrust::device_vector<double>& randomWalkValues() const {
-        return dist;
-    }
-
     std::vector<frac_t> valuesToCPU() {
         std::vector<frac_t> rwVals(numNodes);
-        thrust::copy(dist.begin(), dist.end(), rwVals.begin());
+        auto dev_ptr_start = thrust::device_pointer_cast(dist.Current());
+        auto dev_ptr_end   = dev_ptr_start + numNodes;
+        thrust::copy(dev_ptr_start, dev_ptr_end, rwVals.begin());
         return rwVals;
     }
 
@@ -449,13 +435,15 @@ private:
     //     cudaMalloc(&d_temp_storage, temp_storage_bytes);
     // }
 
-    void initRandomWalk(unsigned int s, thrust::device_vector<EdgeIx>& activeDegrees) {
-        const EdgeIx* degreesPtr = thrust::raw_pointer_cast(activeDegrees.data());
+    void initRandomWalk(GraphManager& gm, unsigned int s) {
+        const NodeIx* degreesPtr = thrust::raw_pointer_cast(gm.getDegrees().data());
 
-        thrust::transform(thrust::make_counting_iterator<NodeIx>(0),
-                          thrust::make_counting_iterator(numNodes),
-                          dist.begin(),
-                          NormalDistributionFunctor(s, degreesPtr)
+        thrust::transform(
+            thrust::device,
+            thrust::make_counting_iterator<NodeIx>(0),
+              thrust::make_counting_iterator(numNodes),
+              dist.Current(),
+              NormalDistributionFunctor(s, degreesPtr)
         );
     }
 };

@@ -97,24 +97,24 @@ class GraphManager {
 //    thrust::device_vector<NodeUpdate> nodeUpdateBuffer;
 //    void updateVolumes();
 
-    void populateNodeLookup(NodeIx numNodes, EdgeIx totalEdges) {
-        thrust::upper_bound(
-            thrust::device,
-            ranges.begin(),
-            ranges.begin() + numNodes + 1,
-            thrust::make_counting_iterator(static_cast<EdgeIx>(0)),
-            thrust::make_counting_iterator(totalEdges),
-            nodeLookup.begin()
-        );
-
-        thrust::transform(
-            thrust::device,
-            nodeLookup.begin(),
-            nodeLookup.end(),
-            nodeLookup.begin(),
-            thrust::placeholders::_1 - 1
-        );
-    }
+    // void populateNodeLookup(NodeIx numNodes, EdgeIx totalEdges) {
+    //     thrust::upper_bound(
+    //         thrust::device,
+    //         ranges.begin(),
+    //         ranges.begin() + numNodes + 1,
+    //         thrust::make_counting_iterator(static_cast<EdgeIx>(0)),
+    //         thrust::make_counting_iterator(totalEdges),
+    //         nodeLookup.begin()
+    //     );
+    //
+    //     thrust::transform(
+    //         thrust::device,
+    //         nodeLookup.begin(),
+    //         nodeLookup.end(),
+    //         nodeLookup.begin(),
+    //         thrust::placeholders::_1 - 1
+    //     );
+    // }
 
 public:
     NodeIx n{0};
@@ -126,7 +126,7 @@ public:
         neighbors(graph.edges),
         ranges(graph.ranges),
         degrees(graph.numNodes),
-        nodeLookup(2*graph.numEdges),
+        // nodeLookup(2*graph.numEdges),
         n(graph.numNodes),
         m(graph.numEdges)
     //        edgeDeletionBuffer(2 * graph.numEdges),
@@ -134,7 +134,7 @@ public:
     {
         thrust::transform(ranges.begin() + 1, ranges.end(), ranges.begin(), degrees.begin(), thrust::minus<int>());
 
-        populateNodeLookup(graph.numNodes, 2 * graph.numEdges);
+        // populateNodeLookup(graph.numNodes, 2 * graph.numEdges);
         // std::cout << "Copied Graph to GPU. \t" << neighbors.size() / 2 << " edges copied" << std::endl;
     }
 
@@ -162,9 +162,9 @@ public:
         return degrees;
     }
 
-    const thrust::device_vector<NodeIx> & getNodeLookup() const {
-        return nodeLookup;
-    }
+    // const thrust::device_vector<NodeIx> & getNodeLookup() const {
+    //     return nodeLookup;
+    // }
 
 //    thrust::device_vector<EdgeIx>& getActiveDegrees() {
 //        return active_degrees;

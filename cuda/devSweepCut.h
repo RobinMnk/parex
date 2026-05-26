@@ -18,14 +18,14 @@
 
 
 __global__
-inline void nodeDiffKernel_Sparse_WarpParallel(
-    NodeIx numActiveNodes,                  // TODO: Active Nodes now!!
-    const NodeIx* __restrict__ activeNodes,
+void nodeDiffKernel_Sparse_WarpParallel(
+    NodeIx numActiveNodes,
+    const LabeledNode* __restrict__ nodes,
     const NodeIx* __restrict__ neighbors,
     const EdgeIx* __restrict__ ranges,
     const NodeIx* __restrict__ degrees,
     const NodeIx* __restrict__ clusterDegrees,
-    const int64_t* __restrict__ labels,
+    const label_t* __restrict__ labels,
     const uint64_t* __restrict__ packedKeys,
     const double* __restrict__ dist,
     NodeData* __restrict__ nodeData
@@ -41,9 +41,10 @@ inline void nodeDiffKernel_Sparse_WarpParallel(
 
     // Only Lane 0 issues the memory requests to the uniform addresses
     if (lane == 0) {
-        nix             = __ldg(&activeNodes[warpId]);
+        const LabeledNode& lNode = nodes[warpId];
+        nix             = lNode.nix;
+        myLabel         = lNode.clusterId;
         myKey           = __ldg(&packedKeys[warpId]);
-        myLabel         = __ldg(&labels[nix]);
         start           = __ldg(&ranges[nix]);
         degree          = __ldg(&degrees[nix]);
         clusterDegree    = __ldg(&clusterDegrees[nix]);
@@ -54,11 +55,12 @@ inline void nodeDiffKernel_Sparse_WarpParallel(
     myLabel = __shfl_sync(0xffffffff, myLabel, 0);
     start   = __shfl_sync(0xffffffff, start, 0);
     degree  = __shfl_sync(0xffffffff, degree, 0);
+    myKey   = __shfl_sync(0xffffffff, myKey, 0);
 
     const EdgeIx end = start + degree;
 
     if (myLabel < 0) {
-        printf("ERROR: random walk should not consider inactive nodes now!!\n");
+        printf("ERROR: sweep cut should not consider inactive nodes now!!\n");
         return;
     }
 
@@ -68,7 +70,7 @@ inline void nodeDiffKernel_Sparse_WarpParallel(
 
         if (nb == INVALID_EDGE) continue;
 
-        const int64_t nbLabel   = __ldg(&labels[nb]);
+        const label_t nbLabel   = __ldg(&labels[nb]);
         const double nbRwValue  = __ldg(&dist[nb]);
         // re-computing the key from scratch is much faster than trying to find and load the value from global memory
         const uint64_t nbKey = packKey(nbLabel, nbRwValue);
@@ -207,7 +209,7 @@ class SweepCutManager {
     }
 
 public:
-    size_t numClustersWithCut{0};
+    NodeIx numClustersWithCut{0};
 
 
     explicit SweepCutManager(NodeIx n) :
@@ -230,10 +232,7 @@ public:
         return sweepCuts;
     }
 
-    void compute(
-        GraphManager& gm,
-        PartitionManager& pm
-    );
+    void compute(GraphManager& gm, PartitionManager& pm, const double* dist);
 
     cub::DoubleBuffer<uint64_t>& getKeyBuffer() {
         return packedKeys;
@@ -242,6 +241,15 @@ public:
     cub::DoubleBuffer<NodeData>& getScNodeData() {
         return scNodeData;
     }
+
+    std::vector<NodeData> downloadPartition() {
+        std::vector<NodeData> pt(numNodes);
+        thrust::device_ptr<NodeData> dev_ptr(scNodeData.Current());
+        thrust::copy(dev_ptr, dev_ptr + numNodes, pt.begin());
+        return pt;
+    }
+
+    void print(const double*);
 };
 
 
@@ -265,17 +273,28 @@ public:
 
 __host__ __device__
 inline label_t extractLabel(const uint64_t key) {
-    const auto orderedLabel = static_cast<uint32_t>(key >> 32);
+    const auto orderedLabel = static_cast<int32_t>(key >> 32);
     return orderedLabel ^ 0x80000000;
 }
 
 struct LabelExtractor {
     __host__ __device__
-    int64_t operator()(uint64_t key) const {
+    label_t operator()(uint64_t key) const {
         return extractLabel(key);
     }
 };
 
+struct ClusterDegreeExtractorOp {
+    const EdgeIx* clusterDegreesPtr;
+
+    __host__ __device__
+    ClusterDegreeExtractorOp(const EdgeIx* ptr) : clusterDegreesPtr(ptr) {}
+
+    __device__
+    EdgeIx operator()(const LabeledNode lNode) const {
+        return clusterDegreesPtr[lNode.nix];
+    }
+};
 
 struct ArgMinOp {
     __host__ __device__
@@ -319,21 +338,41 @@ struct SweepCutTransform {
     }
 };
 
-void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm) {
+void SweepCutManager::print(const double* dist) {
+    std::vector<NodeData> nodes(numNodes);
+    thrust::device_ptr<NodeData> dev_ptr(scNodeData.Current());
+    thrust::copy(dev_ptr, dev_ptr + numNodes, nodes.begin());
+
+    std::vector<frac_t> rwVals(numNodes);
+    auto dev_ptr_start = thrust::device_pointer_cast(dist);
+    auto dev_ptr_end   = dev_ptr_start + numNodes;
+    thrust::copy(dev_ptr_start, dev_ptr_end, rwVals.begin());
+
+    for (NodeIx i = 0; i < numNodes; i++) {
+        printf("Node %d has offset %d, prefixSum = %d and prefixVol = %d with rwValue = %f\n", nodes[i].nix, nodes[i].offsetInCluster, nodes[i].prefixEdgeDiff, nodes[i].prefixVolume, rwVals[i]);
+    }
+    fflush(stdout);
+}
+
+inline void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const double* dist) {
 
     /**
      *  STEP 0: Prepare Data
      */
 
-    const size_t numBlocks = getWarpsPerBlock(gm.n);
+    const size_t numBlocks = getGridSize(gm.n);
 
     nodeDiffKernel_Sparse_WarpParallel<<<numBlocks, threads>>>(
-            pm.numActiveNodes,
-            thrust::raw_pointer_cast(gm.getNeighbors().data()),
-            thrust::raw_pointer_cast(gm.getRanges().data()),
-            thrust::raw_pointer_cast(gm.getDegrees().data()),
-            scNodeData.Current(),
-            packedKeys.Current()
+        pm.numActiveNodes,
+        thrust::raw_pointer_cast(pm.getActiveNodes().data()),
+        thrust::raw_pointer_cast(gm.getNeighbors().data()),
+        thrust::raw_pointer_cast(gm.getRanges().data()),
+        thrust::raw_pointer_cast(gm.getDegrees().data()),
+        thrust::raw_pointer_cast(pm.getAllInternalDegrees().data()),
+         thrust::raw_pointer_cast(pm.getAllLabels().data()),
+        packedKeys.Current(),
+        dist,
+        scNodeData.Current()
     );
 
 
@@ -349,10 +388,11 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm) {
     );
 
     // this includes nodes that just became inactive in the last iteration. Those have not been removed yet (intentionally, for performance)
-    auto allLabels = thrust::make_transform_iterator(packedKeys.Current(), extractLabel);
+    auto allLabels = thrust::make_transform_iterator(packedKeys.Current(), LabelExtractor());
 
     // this now contains only labels of active nodes
     auto activeLabels = thrust::lower_bound(
+        thrust::device,
         allLabels,
         allLabels + pm.numActiveNodes,
         0 // We are looking for the first element >= 0
@@ -365,7 +405,7 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm) {
 
     auto activeNodeData = scNodeData.Current() + inactiveElements;
 
-    auto inputs_begin = thrust::make_zip_iterator(thrust::make_tuple(
+    const auto inputs_begin = thrust::make_zip_iterator(thrust::make_tuple(
         activeNodeData,
         activeLabels
     ));
@@ -403,10 +443,15 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm) {
      * STEP 3: REDUCE
      */
 
-    EdgeIx* clusterDegreesPtr = thrust::raw_pointer_cast(pm.getClusterDegrees().data());
+    EdgeIx* clusterDegreesPtr = thrust::raw_pointer_cast(pm.getAllInternalDegrees().data());
     auto clusterDegreeExtractor = thrust::make_transform_iterator(
-        pm.getActiveNodes().begin(), [clusterDegreesPtr] __device__ (const LabeledNode lNode) { return clusterDegreesPtr[lNode.nix]; }
+        pm.getActiveNodes().begin(),
+        ClusterDegreeExtractorOp(clusterDegreesPtr)
     );
+
+    // auto clusterDegreeExtractor = thrust::make_transform_iterator(
+    //     pm.getActiveNodes().begin(), [clusterDegreesPtr] __device__ (const LabeledNode lNode) { return clusterDegreesPtr[lNode.nix]; }
+    // );
 
     // find cluster-internal volumes
     thrust::reduce_by_key(
@@ -421,7 +466,7 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm) {
         // Output Values
         pm.getVolumes().begin(),
         thrust::equal_to<label_t>(),
-        thrust::plus<>()
+        thrust::plus<EdgeIx>()
     );
 
 
@@ -444,20 +489,41 @@ void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm) {
         thrust::equal_to<int32_t>(),
         ArgMinOp()
     );
+    pm.numActiveClusters = static_cast<size_t>(it.first - pm.getUniqueActiveLabels().begin());
 
-    pm.numActiveClusters = static_cast<size_t>(it.first - activeLabels);
 
+    std::vector<SweepCutData> scs(pm.numActiveClusters);
+    thrust::copy(sweepCutsBuffer.begin(), sweepCutsBuffer.begin() + pm.numActiveClusters, scs.begin());
+    printf("Computed these sweep cuts:\n");
+    for (auto sc : scs) {
+        printf("Cluster: %d, sparsity = %f, offset = %d\n", sc.clusterId, sc.sparsity, sc.offset);
+    }
+    fflush(stdout);
+
+
+
+    const auto threshold = sc_threshold;
 
     // Ignore all sweep Cuts that have a sparsity above the threshold
     auto end_iter = thrust::copy_if(
         sweepCutsBuffer.begin(), sweepCutsBuffer.begin() + pm.numActiveClusters,
         sweepCuts.begin(),
-        [=] __device__ (const SweepCutData& scData) {
-            return scData.sparsity < sc_threshold;
+        [threshold] __device__ (const SweepCutData& scData) {
+            return scData.sparsity < threshold;
         }
     );
 
-    numClustersWithCut = static_cast<size_t>(end_iter - sweepCutsBuffer.begin());
+    numClustersWithCut = static_cast<size_t>(end_iter - sweepCuts.begin());
+
+    if (numClustersWithCut > 0) {
+        std::vector<SweepCutData> scs2(numClustersWithCut);
+        thrust::copy(sweepCuts.begin(), sweepCuts.begin() + numClustersWithCut, scs2.begin());
+        printf("These Sweep Cuts are below the threshold:\n");
+        for (auto sc : scs2) {
+            printf("Cluster: %d, sparsity = %f, offset = %d\n", sc.clusterId, sc.sparsity, sc.offset);
+        }
+        fflush(stdout);
+    }
 }
 
 

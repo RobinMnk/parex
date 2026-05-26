@@ -33,7 +33,6 @@ public:
     AllSweepCuts readSweepCuts();
 
     void cutClusters();
-    void fixupPartition();
 
     EdgeIx getNumCutEdges();
 

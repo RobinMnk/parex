@@ -28,20 +28,26 @@ struct CudaDeviceManager::Impl {
 
         gm = std::make_unique<GraphManager>(graph);
         sc = std::make_unique<SweepCutManager>(graph.numNodes);
-        pt = std::make_unique<PartitionManager>(*gm, sc->getKeyBuffer());
-        rw = std::make_unique<RandomWalkManager>(graph.numNodes, pt->getClusterDegrees());
+        pt = std::make_unique<PartitionManager>(*gm);
+        rw = std::make_unique<RandomWalkManager>(*gm);
         cm = std::make_unique<ConsolidationManager>(graph.numNodes, 2 * graph.numEdges);
     }
 
-    void iterateRandomWalk() {
-        rw->stepFast(*gm, sc->getScNodeDataBuffer(), sc->getKeyBuffer(), pt->getActiveNodeLabels(), pt->getClusterDegrees());
+    void iterateRandomWalk() const {
+        rw->stepFast(
+            *gm,
+            pt->getActiveNodes(),
+            sc->getKeyBuffer(),
+            pt->getAllInternalDegrees(),
+            pt->numActiveNodes
+        );
     }
 
-    std::vector<frac_t> readRandomWalkValues() {
+    std::vector<frac_t> readRandomWalkValues() const {
         return rw->valuesToCPU();
     }
 
-    std::vector<EdgeIx> downloadDegrees() {
+    std::vector<EdgeIx> downloadDegrees() const {
         return pt->downloadActiveDegrees();
     }
 
@@ -60,20 +66,25 @@ struct CudaDeviceManager::Impl {
 
     std::vector<int> downloadLabels() {
         std::vector<int> labels(gm->n);
-        thrust::copy(pt->getActiveNodeLabels().begin(), pt->getActiveNodeLabels().end(), labels.begin());
+        thrust::copy(pt->getAllLabels().begin(), pt->getAllLabels().end(), labels.begin());
         return labels;
     }
 
-    void computeSweepCuts() {
-        sc->compute(*gm, *pt);
+    void computeSweepCuts() const {
+        sc->compute(
+            *gm, *pt, rw->getValues()
+        );
     }
 
     void cutClusters() {
         // TODO: if there are no valid sweep cuts (all above the threshold) -> continue!
         if (sc->numClustersWithCut == 0) return;
 
+        inspect(pt->getUniqueActiveLabels(), pt->numActiveClusters);
 
         pt->cutClusters(sc->getScNodeData(), sc->getSweepCuts(), sc->numClustersWithCut);
+
+        inspect(pt->getUniqueActiveLabels(), pt->numActiveClusters);
 
         // std::vector<NodeData> nodes(gm->n);
         // thrust::device_ptr<NodeData> dev_ptr(pt->getPartitionView().Current());
@@ -83,7 +94,7 @@ struct CudaDeviceManager::Impl {
         //     printf("Node %d has label %d\n", nodes[i].nix, nodes[i].label);
         // }
 
-        cm->consolidate(*gm, pt->getActiveNodes(), pt->numActiveNodes);
+        // cm->consolidate(*gm, pt->getActiveNodes(), pt->numActiveNodes);
 
         // thrust::copy(dev_ptr, dev_ptr + gm->n, nodes.begin());
         // printf("After Consolidate\n");
@@ -92,9 +103,14 @@ struct CudaDeviceManager::Impl {
         // }
 
 
-        pt->computeClusterData();
+        pt->computeClusterData(rw->getValues());
+
+
+        inspect(pt->getUniqueActiveLabels(), pt->numActiveClusters);
 
         pt->recenterAndDeactivateClusters(rw->getValues());
+
+        inspect(pt->getUniqueActiveLabels(), pt->numActiveClusters);
 
         // absolutely crucial!!
         // fixupPartition();
@@ -113,10 +129,6 @@ struct CudaDeviceManager::Impl {
 
     inline void expanderDecomposition();
 
-    void fixupPartition() {
-        pt->scatter();
-    }
-
     AllSweepCuts getSweepCuts() {
         NodeIx numActiveClusters = pt->numActiveClusters;
         std::vector<int> clusterIds(numActiveClusters);
@@ -128,7 +140,7 @@ struct CudaDeviceManager::Impl {
 
 
     std::vector<NodeData> downloadPartition() {
-        return pt->downloadPartition();
+        return sc->downloadPartition();
     }
 
     std::vector<int> downloadActiveEdgeMap() {
@@ -158,7 +170,7 @@ void printNodes(std::vector<NodeData>& nodes, NodeIx n, NodeData* ptr) {
     thrust::copy(dev_ptr2, dev_ptr2 + n, nodes.begin());
 
     for (auto j = 0; j < n; j++) {
-        std::cout << "(" << nodes[j].nix << ", " << nodes[j].label  << "), ";
+        std::cout << "(" << nodes[j].nix  << "), ";
     }
     std::cout << std::endl;
 }
@@ -262,7 +274,7 @@ void CudaDeviceManager::Impl::expanderDecomposition() {
     Timer t;
     t.start();
     while (i++ < MAX_NUM_ITER && pt->numActiveClusters > 0 && pt->numActiveNodes > 0) {
-        // printf("==================================================================================== It: %d\n", (i+1));
+        std::cout << "==================================================================================== \n Begin Iteration: " <<  (i) << std::endl;
 
         // #pragma unroll
         // for (int x = 0; x < NUM_RW_STEPS; x++) {
@@ -275,10 +287,14 @@ void CudaDeviceManager::Impl::expanderDecomposition() {
         //     walkReset *= 2;
         // }
 
+        std::cout << ("Random Walk Step") << std::endl;
         iterateRandomWalk();
         // }
 
+        std::cout << ("Compute SweepCuts") << std::endl;
         computeSweepCuts();
+
+        std::cout << ("Adjust Partition") << std::endl;
         cutClusters();
     }
     if (i >= MAX_NUM_ITER) {
@@ -343,8 +359,6 @@ void CudaDeviceManager::iterateRandomWalk() { impl->iterateRandomWalk(); }
 void CudaDeviceManager::computeSweepCuts() { impl->computeSweepCuts(); }
 
 void CudaDeviceManager::cutClusters() { impl->cutClusters(); }
-
-void CudaDeviceManager::fixupPartition() { impl->fixupPartition(); }
 
 void CudaDeviceManager::expanderDecomposition() { impl->expanderDecomposition(); }
 

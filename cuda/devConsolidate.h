@@ -10,7 +10,7 @@
 #include "devGraph.h"
 
 __global__
-inline void linkEdges_kernel_edgeView(
+void linkEdges_kernel_edgeView(
     const LabeledNode* __restrict__ nodes,
     const NodeIx* __restrict__ neighbors,
     const NodeIx* __restrict__ nodeLookup,
@@ -44,7 +44,7 @@ inline void linkEdges_kernel_edgeView(
 }
 
 __global__
-inline void linkEdges_kernel_nodeView(
+void linkEdges_kernel_nodeView(
     const NodeIx numNodes,
     const LabeledNode* __restrict__ nodes,
     const NodeIx* __restrict__ neighbors,
@@ -105,7 +105,7 @@ inline void linkEdges_kernel_nodeView(
 
 
 __global__
-inline void compress_kernel(NodeIx* __restrict__ parent, NodeIx numNodes) {
+void compress_kernel(NodeIx* __restrict__ parent, NodeIx numNodes) {
     NodeIx i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= numNodes) return;
 
@@ -119,12 +119,12 @@ inline void compress_kernel(NodeIx* __restrict__ parent, NodeIx numNodes) {
 
 
 __global__
-inline void assignRootAsLabel_kernel(
+void assignRootAsLabel_kernel(
     LabeledNode* __restrict__ nodes,
     const NodeIx* __restrict__ parent,
     NodeIx numNodes
 ) {
-    NodeIx i = blockIdx.x * blockDim.x + threadIdx.x;
+    const NodeIx i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= numNodes) return;
 
     // Only update nodes that are part of an active cluster

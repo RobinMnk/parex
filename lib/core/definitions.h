@@ -29,10 +29,9 @@ constexpr int threads = 256;
 constexpr int WARP = 32;
 constexpr int warpsPerBlock = threads / WARP;
 
-inline unsigned int getWarpsPerBlock(unsigned int n) {
+inline unsigned int getGridSize(unsigned int n) {
     return (n + warpsPerBlock - 1) / warpsPerBlock;
 }
-
 
 inline unsigned int randSeed{6582};
 
@@ -67,6 +66,12 @@ struct NodeData {
     NodeIx offsetInCluster;
 };
 
+struct ClusterData {
+    float rwSum;
+    float maxPotential;
+    float minPotential;
+    NodeIx totalElements;
+};
 
 
 // struct NodeData {
@@ -81,13 +86,13 @@ struct NodeData {
 // };
 
 struct AllSweepCuts {
-    std::vector<int> clusterIds;
+    std::vector<label_t> clusterIds;
     std::vector<SweepCutData> cuts;
 //    std::vector<PrefixValues> prefixSums;
 };
 
 struct FinalPartition {
-    std::vector<int> clusterIds;
+    std::vector<label_t> clusterIds;
     int numClusters;
 };
 
