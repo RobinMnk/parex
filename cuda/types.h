@@ -17,7 +17,7 @@ void inspect(dVec<T> vec, NodeIx n) {
     std::vector<T> host_vec(n);
     thrust::copy(vec.begin(), vec.begin() + n, host_vec.begin());
     for (const T& t : host_vec) {
-        std::cout << t << " ";
+        std::cout << t << "  ";
     }
     std::cout << std::endl;
 }

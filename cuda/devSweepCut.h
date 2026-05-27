@@ -60,7 +60,8 @@ void nodeDiffKernel_Sparse_WarpParallel(
     const EdgeIx end = start + degree;
 
     if (myLabel < 0) {
-        printf("ERROR: sweep cut should not consider inactive nodes now!!\n");
+        // This can happen when nodes were just deactivated in the last iteration, nothing to do here
+        // printf("ERROR: sweep cut should not consider inactive nodes now!!\n");
         return;
     }
 
@@ -73,7 +74,7 @@ void nodeDiffKernel_Sparse_WarpParallel(
         const label_t nbLabel   = __ldg(&labels[nb]);
         const double nbRwValue  = __ldg(&dist[nb]);
         // re-computing the key from scratch is much faster than trying to find and load the value from global memory
-        const uint64_t nbKey = packKey(nbLabel, nbRwValue);
+        const uint64_t nbKey = packKey(nbLabel, static_cast<float>(nbRwValue));
 
         if (nbLabel != myLabel) {
             printf("ERROR: this edge should have been invalidated: %d -> %d [eix: %d]\n", nix, nb, j);
@@ -83,10 +84,14 @@ void nodeDiffKernel_Sparse_WarpParallel(
         if (nbKey != myKey) {
             isBefore = (nbKey < myKey);
         } else {
-            isBefore = (nb < nix);
+            isBefore = (nb < nix); // TODO: I think this is not entirely correct (should compare warpIds)
         }
 
         nodeContribution += isBefore ? -1 : 1;
+
+        // if (nix == 7) {
+        //     printf("\tnix 7: edge -> %d adds %d. Running total: %d\tmyKey %llu and nbKey:%llu\n", nb, isBefore ? -1 : 1, nodeContribution, myKey, nbKey);
+        // }
     }
 
     #pragma unroll
@@ -304,7 +309,7 @@ struct CheckThreshold {
     const double threshold;
 
     __device__
-    bool operator()(const SweepCutData& scData) {
+    bool operator()(const SweepCutData& scData) const {
         return scData.sparsity < threshold;
     }
 };
@@ -352,14 +357,25 @@ struct NodeDataScanOp {
 
 struct SweepCutTransform {
     const NodeData* nodeDataPtr;
+    const label_t* uniqueLabelsPtr;
     const EdgeIx* clusterVolumesPtr;
     const LabeledNode* lNodes;
+    const NodeIx numClusters;
 
     __host__ __device__
     SweepCutData operator()(const size_t idx) const {
         const NodeData nodeData     = nodeDataPtr[idx];
-        const EdgeIx totalVol       = clusterVolumesPtr[idx];
         const label_t label         = lNodes[idx].clusterId;
+
+        const label_t* tv = thrust::lower_bound(
+            thrust::seq,
+            uniqueLabelsPtr,
+            uniqueLabelsPtr + numClusters,
+            label
+        );
+        auto segment_index = tv - uniqueLabelsPtr;
+        const EdgeIx totalVol = clusterVolumesPtr[segment_index];
+
 
         const EdgeIx edgeDiff = nodeData.prefixEdgeDiff;
         const EdgeIx prefixVol = nodeData.prefixVolume;
@@ -368,6 +384,9 @@ struct SweepCutTransform {
                              (prefixVol < totalVol - prefixVol) ? prefixVol : (totalVol - prefixVol);
 
         const float sparsity = (denom > 0) ? (static_cast<float>(edgeDiff) / static_cast<float>(denom)) : 2.0f;
+
+        if (idx > 0)
+            printf("idx=%llu [nix = %d] computed this sweep cut: %d / %d = %f\t(pVol = %d, totVol = %d)\n", idx, lNodes[idx].nix, edgeDiff, denom, sparsity, prefixVol, totalVol);
 
         return { label, sparsity , nodeData.offsetInCluster };
     }
@@ -566,7 +585,7 @@ inline void SweepCutManager::compute_sweep_cuts(GraphManager& gm, PartitionManag
     // );
 
     // find cluster-internal volumes
-    thrust::reduce_by_key(
+    const auto it = thrust::reduce_by_key(
         thrust::device,
         // Keys
         iter_begin,
@@ -580,13 +599,31 @@ inline void SweepCutManager::compute_sweep_cuts(GraphManager& gm, PartitionManag
         thrust::equal_to<label_t>(),
         thrust::plus<EdgeIx>()
     );
+    pm.numActiveClusters = static_cast<size_t>(it.first - pm.getUniqueActiveLabels().begin());
+
+    printf("Cluster Volumes: ");
+    inspect(pm.getVolumes(), pm.numActiveClusters);
+
+
+    std::vector<NodeData> nodeData(pm.numActiveNodes);
+    auto scData_ptr = thrust::device_pointer_cast(scNodeData.Current());
+    thrust::copy_n(scData_ptr, pm.numActiveNodes, nodeData.begin());
+    for (NodeIx i = 0; i < pm.numActiveNodes; i++) {
+        printf("node %d: off=%d, edgeDiff=%d, pVol=%d\n", nodeData[i].nix, nodeData[i].offsetInCluster, nodeData[i].prefixEdgeDiff, nodeData[i].prefixVolume);
+    }
+    printf("\n");
+    fflush(stdout);
+
+
+
 
     // find best sweep cut for each cluster
 
     const EdgeIx* clusterVolumesPtr = thrust::raw_pointer_cast(pm.getVolumes().data());
-    const SweepCutTransform scTransform(scNodeData.Current(), clusterVolumesPtr, lNodesPtr.get());
+    const label_t* uniqueLabels = thrust::raw_pointer_cast(pm.getUniqueActiveLabels().data());
+    const SweepCutTransform scTransform(scNodeData.Current(), uniqueLabels, clusterVolumesPtr, lNodesPtr.get(), pm.numActiveClusters);
 
-    const auto it = thrust::reduce_by_key(
+    thrust::reduce_by_key(
         thrust::device,
         // Keys
         iter_begin,
@@ -600,7 +637,6 @@ inline void SweepCutManager::compute_sweep_cuts(GraphManager& gm, PartitionManag
         thrust::equal_to<label_t>(),
         ArgMinOp()
     );
-    pm.numActiveClusters = static_cast<size_t>(it.first - pm.getUniqueActiveLabels().begin());
 
 
     std::vector<SweepCutData> scs(pm.numActiveClusters);
@@ -613,7 +649,7 @@ inline void SweepCutManager::compute_sweep_cuts(GraphManager& gm, PartitionManag
 
 
 
-    const auto threshold = sc_threshold;
+    const double threshold = sc_threshold;
 
     // Ignore all sweep Cuts that have a sparsity above the threshold
     auto end_iter = thrust::copy_if(
@@ -621,7 +657,17 @@ inline void SweepCutManager::compute_sweep_cuts(GraphManager& gm, PartitionManag
         sweepCuts.begin(), CheckThreshold(threshold)
     );
 
-    numClustersWithCut = static_cast<size_t>(end_iter - sweepCuts.begin());
+    // numClustersWithCut = static_cast<size_t>(end_iter - sweepCuts.begin());
+
+    if (end_iter < sweepCuts.begin() || end_iter > sweepCuts.end()) {
+        std::cout << "Error: Memory corruption detected in Thrust copy_if!" << std::endl;
+        numClustersWithCut = 0;
+    } else {
+        numClustersWithCut = std::distance(sweepCuts.begin(), end_iter);
+    }
+
+    std::cout << "Set numClustersWithCut to " << numClustersWithCut << std::endl;
+
 
     if (numClustersWithCut > 0) {
         std::vector<SweepCutData> scs2(numClustersWithCut);

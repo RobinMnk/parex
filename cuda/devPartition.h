@@ -112,8 +112,8 @@ void disableEdgesKernel_node(
     const EdgeIx end = start + degree;
 
     if (myLabel < 0) {
-        // Should not happen here
-        printf("ERROR: considering inactive node in disable edges kernel!\n");
+        // This can happen when nodes were just deactivated in this iteration, nothing to do here
+        // printf("ERROR: considering inactive node in disable edges kernel!\n");
         return;
     }
 
@@ -478,21 +478,25 @@ public:
     void cutClusters(
         cub::DoubleBuffer<NodeData>& scNodeData,
         const thrust::device_vector<SweepCutData>& sweepCuts,
-        size_t numClusters
+        size_t numClustersWithCut
     ) {
         const SweepCutData* sweepCutPtr = thrust::raw_pointer_cast(sweepCuts.data());
         const NodeData* scNodeDataPtr = scNodeData.Current();
+        const label_t* uniqueLabels = thrust::raw_pointer_cast(clusterLabels.data());
         LabeledNode* labeledNodesPtr = thrust::raw_pointer_cast(activeNodes.data());
         label_t* allLabelsPtr = thrust::raw_pointer_cast(allLabels.data());
 
         const float sparsity_target = sc_threshold;
         const label_t maxLabel = clusterLabels.back();
+        const NodeIx clusterCount = numClustersWithCut;
+
+        inspect(clusterLabels, numActiveClusters);
 
         thrust::for_each_n(
             thrust::device,
             thrust::make_counting_iterator(0),
             numActiveNodes,
-            [sweepCutPtr, scNodeDataPtr, labeledNodesPtr, allLabelsPtr, sparsity_target, maxLabel, numClusters] __device__ (int idx) {
+            [sweepCutPtr, scNodeDataPtr, labeledNodesPtr, allLabelsPtr, uniqueLabels, sparsity_target, maxLabel, clusterCount] __device__ (int idx) {
                 const NodeData& scNode = scNodeDataPtr[idx];
                 LabeledNode lNode = labeledNodesPtr[idx];
 
@@ -509,22 +513,23 @@ public:
                 const SweepCutData* sc = thrust::lower_bound(
                     thrust::seq,
                     sweepCutPtr,
-                    sweepCutPtr + numClusters,
+                    sweepCutPtr + clusterCount,
                     lNode.clusterId,
                     [=] __device__ (const SweepCutData& element, label_t target) {
                         return element.clusterId < target;
                     }
                 );
 
-                if (sc == sweepCutPtr + numClusters) {
+                // lower bound returns the first value >= lNode.clusterId. It thus might return a larger value if there is no matching entry
+                if (sc == sweepCutPtr + clusterCount || lNode.clusterId != sc->clusterId) {
                     // the sparsity of this sweepCut was above the threshold so it was removed -> nothing to do
                     printf("INFO: did not find corresponding sweep cut info for node %d with label = %d\n", lNode.nix, lNode.clusterId);
                     return;
                 }
 
-                if (lNode.clusterId != sc->clusterId) {
-                    printf("ERRORRR!!!! clusterId does not match sweep cut!\n\t%d is the clusterId, this is the scId: %d\t[sparsity = %f, offset = %d]\n", lNode.clusterId, sc->clusterId, sc->sparsity, sc->offset);
-                }
+                // if (lNode.clusterId != sc->clusterId) {
+                //     printf("ERRORRR!!!! clusterId does not match sweep cut!\n\t%d is the clusterId, this is the scId: %d\t[sparsity = %f, offset = %d], also index = %lld and numClusters: %d\n", lNode.clusterId, scData.clusterId, scData.sparsity, scData.offset, index, clusterCount);
+                // }
 
                 if (sc->sparsity >= sparsity_target) {
                     printf("ERRORRR!!!! cluster should have been removed:\t[sparsity = %f >= = %f]\n", sc->sparsity, sparsity_target);
@@ -532,7 +537,7 @@ public:
                 }
 
                 printf("Node %d has offset %d threshold is > %d\n", lNode.nix, scNode.offsetInCluster, sc->offset);
-                if(scNode.offsetInCluster >= sc->offset) { // TODO: should be > not >=
+                if(scNode.offsetInCluster > sc->offset) { // TODO: should be > not >=
                     label_t updatedLabel = lNode.clusterId + maxLabel + 1;
                     labeledNodesPtr[idx].clusterId = updatedLabel;
                     allLabelsPtr[lNode.nix] = updatedLabel;
