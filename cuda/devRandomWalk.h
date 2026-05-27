@@ -316,7 +316,7 @@ public:
             dist.Alternate(),
             packedKeys.Current()
         );
-        fflush(stdout);
+        // fflush(stdout);
 
         dist.selector ^= 1;
     }

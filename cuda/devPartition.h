@@ -124,7 +124,7 @@ void disableEdgesKernel_node(
         const label_t otherLabel = allLabels[nb];
         if (myLabel != otherLabel) {
             neighbors[j] = INVALID_EDGE;
-            printf("Disabling edge %d -> %d\t[eix: %d]\n", nix, nb, j);
+            // printf("Disabling edge %d -> %d\t[eix: %d]\n", nix, nb, j);
         } else {
             deg++;
         }
@@ -363,9 +363,31 @@ public:
             reduceOp
         );
 
-        inspect(clusterLabels, numActiveClusters);
+        // inspect(clusterLabels, numActiveClusters);
 
         numActiveClusters = end_iters_new.second - clusterData.begin();
+
+
+        thrust::sort_by_key(
+            thrust::device,
+            clusterLabels.begin(),
+            clusterLabels.begin() + numActiveClusters,
+            clusterData.begin()
+        );
+
+
+        // const label_t* uniqueLabelsPtr = thrust::raw_pointer_cast(clusterLabels.data());
+        // int* mapPtr = thrust::raw_pointer_cast(clusterDataLookup.data());
+        //
+        // thrust::for_each_n(
+        //     thrust::device,
+        //     thrust::make_counting_iterator(0),
+        //     numActiveClusters,
+        //     [uniqueLabelsPtr, mapPtr] __device__ (int structIdx) {
+        //         label_t actualLabel = uniqueLabelsPtr[structIdx];
+        //         mapPtr[actualLabel] = structIdx; // Direct inversion mapping
+        //     }
+        // );
 
 
 
@@ -482,21 +504,20 @@ public:
     ) {
         const SweepCutData* sweepCutPtr = thrust::raw_pointer_cast(sweepCuts.data());
         const NodeData* scNodeDataPtr = scNodeData.Current();
-        const label_t* uniqueLabels = thrust::raw_pointer_cast(clusterLabels.data());
         LabeledNode* labeledNodesPtr = thrust::raw_pointer_cast(activeNodes.data());
         label_t* allLabelsPtr = thrust::raw_pointer_cast(allLabels.data());
 
         const float sparsity_target = sc_threshold;
-        const label_t maxLabel = clusterLabels.back();
+        const label_t* maxLabel = thrust::raw_pointer_cast(clusterLabels.data()) + numActiveClusters - 1;
         const NodeIx clusterCount = numClustersWithCut;
 
-        inspect(clusterLabels, numActiveClusters);
+        // inspect(clusterLabels, numActiveClusters);
 
         thrust::for_each_n(
             thrust::device,
             thrust::make_counting_iterator(0),
             numActiveNodes,
-            [sweepCutPtr, scNodeDataPtr, labeledNodesPtr, allLabelsPtr, uniqueLabels, sparsity_target, maxLabel, clusterCount] __device__ (int idx) {
+            [sweepCutPtr, scNodeDataPtr, labeledNodesPtr, allLabelsPtr, sparsity_target, maxLabel, clusterCount] __device__ (int idx) {
                 const NodeData& scNode = scNodeDataPtr[idx];
                 LabeledNode lNode = labeledNodesPtr[idx];
 
@@ -523,7 +544,7 @@ public:
                 // lower bound returns the first value >= lNode.clusterId. It thus might return a larger value if there is no matching entry
                 if (sc == sweepCutPtr + clusterCount || lNode.clusterId != sc->clusterId) {
                     // the sparsity of this sweepCut was above the threshold so it was removed -> nothing to do
-                    printf("INFO: did not find corresponding sweep cut info for node %d with label = %d\n", lNode.nix, lNode.clusterId);
+                    // printf("INFO: did not find corresponding sweep cut info for node %d with label = %d\n", lNode.nix, lNode.clusterId);
                     return;
                 }
 
@@ -533,15 +554,14 @@ public:
 
                 if (sc->sparsity >= sparsity_target) {
                     printf("ERRORRR!!!! cluster should have been removed:\t[sparsity = %f >= = %f]\n", sc->sparsity, sparsity_target);
-
                 }
 
-                printf("Node %d has offset %d threshold is > %d\n", lNode.nix, scNode.offsetInCluster, sc->offset);
+                // printf("Node %d has offset %d threshold is > %d\n", lNode.nix, scNode.offsetInCluster, sc->offset);
                 if(scNode.offsetInCluster > sc->offset) { // TODO: should be > not >=
-                    label_t updatedLabel = lNode.clusterId + maxLabel + 1;
+                    label_t updatedLabel = lNode.clusterId + *maxLabel + 1;
+                    // printf("Cluster %d is split into two parts -> new label for nix = %d is %d, because maxLabel = %d\n", lNode.clusterId, lNode.nix, updatedLabel, *maxLabel);
                     labeledNodesPtr[idx].clusterId = updatedLabel;
                     allLabelsPtr[lNode.nix] = updatedLabel;
-                    printf("Cluster %d is split into two parts -> new label for nix = %d is %d, because maxLabel = %d\n", lNode.clusterId, lNode.nix, updatedLabel, maxLabel);
                 }
             }
         );
@@ -576,6 +596,10 @@ public:
                     uniqueLabelsPtr + numClusters,
                     label
                 );
+                if (it == (uniqueLabelsPtr + numClusters) || *it != label) {
+                    printf("ERROR: could not find clusterData for node %d with label%d\n", lNode.nix, label);
+                    return;
+                }
                 const int index = static_cast<int>(it - uniqueLabelsPtr);
 
                 // int correspondingSweepCutIndex = labelLookupPtr[label];
@@ -601,7 +625,7 @@ public:
                 if (clusterPotential < walk_threshold || cd.totalElements < 2) {
                     // this cluster should be deactivated
                     const label_t updatedLabel = *smallestLabel - label - 1;
-                    printf("Deactivating cluster: %d -> %d \t smallest: %d\n", lNode.clusterId, updatedLabel, *smallestLabel);
+                    // printf("Deactivating cluster: %d -> %d \t smallest: %d\n", lNode.clusterId, updatedLabel, *smallestLabel);
                     lNode.clusterId = updatedLabel;
                     allLabelsPtr[lNode.nix] = updatedLabel;
                 } else {

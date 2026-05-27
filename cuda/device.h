@@ -97,7 +97,7 @@ struct CudaDeviceManager::Impl {
 
         if (sc->numClustersWithCut > 0) {
             pt->cutClusters(sc->getScNodeData(), sc->getSweepCuts(), sc->numClustersWithCut);
-            fflush(stdout);
+            // fflush(stdout);
         }
 
         // FinalPartition fp = getFinalPartition();
@@ -122,7 +122,7 @@ struct CudaDeviceManager::Impl {
         //     printf("Node %d has label %d\n", nodes[i].nix, nodes[i].label);
         // }
 
-        printPartition();
+        // printPartition();
 
         pt->computeClusterData(rw->getValues());
 
@@ -147,14 +147,14 @@ struct CudaDeviceManager::Impl {
         // }
         // std::cout << std::endl;
 
-        printPartition();
+        // printPartition();
 
         pt->disableEdges(*gm);
-        fflush(stdout);
+        // fflush(stdout);
 
-        inspect(gm->getNeighbors(), 2*gm->m);
-
-        inspect(pt->getAllInternalDegrees(), gm->n);
+        // inspect(gm->getNeighbors(), 2*gm->m);
+        //
+        // inspect(pt->getAllInternalDegrees(), gm->n);
 
     }
 
@@ -305,7 +305,7 @@ void CudaDeviceManager::Impl::expanderDecomposition() {
     Timer t;
     t.start();
     while (i++ < MAX_NUM_ITER && pt->numActiveClusters > 0 && pt->numActiveNodes > 0) {
-        std::cout << "==================================================================================== \n Begin Iteration: " <<  (i) << std::endl;
+        std::cout << "==================================================================================== \nBegin Iteration: " <<  (i) << std::endl;
 
         // #pragma unroll
         // for (int x = 0; x < NUM_RW_STEPS; x++) {
@@ -337,7 +337,7 @@ void CudaDeviceManager::Impl::expanderDecomposition() {
 
     auto tm = t.timeSeconds();
     // printf("%d iterations with %fs per iteration\n", i, (float) tm / i);
-    printf("iterations: %d\n", i);
+    printf("==================================================================================== \niterations: %d\n", i);
 
 
     // printf("Before cutting\n");
