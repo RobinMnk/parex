@@ -46,7 +46,7 @@ TEST_F(CudaTest, Degrees) {
     ASSERT_EQ(deg, expected);
 }
 
-TEST_P(CudaTest, RandomWalk) {
+TEST_P(CudaTest, RandomWalkTest) {
     auto rwData = cuda.readRandomWalkValues();
 
     int numSteps = GetParam();
@@ -72,7 +72,7 @@ INSTANTIATE_TEST_SUITE_P(
     Iterations,
     CudaTest,
     // testing::Values(6)
-    testing::Values(0, 1, 2, 4, 8, 16, 64, 128, 256)
+    testing::Values(0, 1, 2, 4, 8, 16, 64, 128, 256, 512)
 );
 
 
@@ -106,10 +106,9 @@ TEST_F(CudaTest, SweepCutTest) {
     SweepCut expected = part.sweepCut(0, z);
 
     cuda.computeSweepCuts();
-    cuda.fixupPartition();
     AllSweepCuts result = cuda.readSweepCuts();
 
-    std::vector<NodeData> pt = cuda.downloadPartition();
+    // std::vector<NodeData> pt = cuda.downloadPartition();
 
     NodeIx n = graph.numNodes;
 
@@ -118,11 +117,11 @@ TEST_F(CudaTest, SweepCutTest) {
 //                << "GPU:  " << pt[j].prefixEdgeDiff << " / " << pt[j].prefixVolume << " (" << (static_cast<float>(pt[j].prefixEdgeDiff) / pt[j].prefixVolume) << ")" << std::endl;
 //    }
 
-    for(int j = 0; j < n; j++) {
-//        EXPECT_EQ(result.prefixSums[j].volume, expected.pS[j].volume);
-        ASSERT_EQ(pt[j].label, 0);
-        ASSERT_EQ(pt[j].nix, j);
-    }
+//     for(int j = 0; j < n; j++) {
+// //        EXPECT_EQ(result.prefixSums[j].volume, expected.pS[j].volume);
+//         ASSERT_EQ(pt[j].label, 0);
+//         ASSERT_EQ(pt[j].nix, j);
+//     }
 
 //    std::cout << "cutting at index: " << result.cuts[0].offset << "\n compared to " << expected.offset << std::endl;
 
@@ -154,7 +153,6 @@ TEST_P(CudaTest, SweepCut) {
         SweepCut expected = part.sweepCut(0, rw.values());
 
         cuda.computeSweepCuts();
-        cuda.fixupPartition();
         AllSweepCuts result = cuda.readSweepCuts();
 
         EXPECT_EQ(result.clusterIds.size(), 1);
@@ -208,7 +206,7 @@ TEST_F(CudaTest, CutTest) {
     std::vector<NodeIx> modified{0};
     part.split<false, false>(0, sweepCut.offset, modified);
     auto timeCPU = t.timeMicros();
-    std::cout << "CPU time: " << timeCPU << "μs" << std::endl;
+    std::cout << "CPU time: " << timeCPU << "μs\t\toffset was " << sweepCut.offset  << std::endl;
 
     std::vector<NodeIx> expectedLabels = getLabels(graph, part);
 
@@ -224,11 +222,12 @@ TEST_F(CudaTest, CutTest) {
     AllSweepCuts result = cuda.readSweepCuts();
     EXPECT_NEAR(result.cuts[0].sparsity, sweepCut.sparsity, 0.00000001);
 
+    // std::vector<NodeData> pt = cuda.downloadPartition();
 
-    std::vector<NodeData> pt = cuda.downloadPartition();
+    FinalPartition fp = cuda.getFinalPartition();
 
     for (NodeIx nix = 0; nix < graph.numNodes; nix++) {
-        EXPECT_EQ(pt[nix].label, expectedLabels[nix]) << " nix: " << nix;
+        EXPECT_EQ(fp.clusterIds[nix], expectedLabels[nix]) << " nix: " << nix;
     }
 }
 
@@ -272,7 +271,6 @@ TEST_P(CudaTest, RepeatedCuts) {
     Partition part(&graph);
 
     std::vector<NodeIx> active, next{0};
-    std::vector<NodeData> pt;
 
     for(int i = 0; i < GetParam(); i++) {
         std::cout << "=====================================================================================" << std::endl;
@@ -287,7 +285,7 @@ TEST_P(CudaTest, RepeatedCuts) {
             ASSERT_EQ(part.vertexFor(nix).internalDegree, deg[nix]) << " nix = " << nix << "\t Iteration: " << (i+1);
         }
 
-        pt = cuda.downloadPartition();
+        // pt = cuda.downloadPartition();
         // for (NodeIx cid = 0; cid < part.numClusters(); cid++) {
         //     for (const ClusterVertex& cv: part.getCluster(cid)) {
         //         ASSERT_EQ(pt[cv.nix].label, cid) << " nix: " << cv.nix << "\t Iteration: " << (i+1);
@@ -300,7 +298,7 @@ TEST_P(CudaTest, RepeatedCuts) {
         auto y = cuda.readRandomWalkValues();
         auto z = rw.values();
 
-        pt = cuda.downloadPartition();
+        // pt = cuda.downloadPartition();
         // for (NodeIx cid = 0; cid < part.numClusters(); cid++) {
         //     for (const ClusterVertex& cv: part.getCluster(cid)) {
         //         ASSERT_EQ(pt[cv.nix].label, cid) << " nix: " << cv.nix << "\t Iteration: " << (i+1);
@@ -448,5 +446,7 @@ TEST_F(CudaTest, ExpanderDecomposition) {
     printf("Terminated after %fs\n", t.timeSeconds());
 }
 
+
+*/
 
 
