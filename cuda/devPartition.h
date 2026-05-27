@@ -10,6 +10,7 @@
 #include <thrust/binary_search.h>
 #include <thrust/sort.h>
 #include <thrust/unique.h>
+#include <thrust/host_vector.h>
 #include "timer.h"
 
 struct InitFunctor {
@@ -375,6 +376,9 @@ public:
             clusterData.begin()
         );
 
+        // label_t smallestActiveLabel = clusterLabels.front();
+        // std::cout << "smallestActiveLabel " << smallestActiveLabel << std::endl;
+
 
         // const label_t* uniqueLabelsPtr = thrust::raw_pointer_cast(clusterLabels.data());
         // int* mapPtr = thrust::raw_pointer_cast(clusterDataLookup.data());
@@ -473,7 +477,6 @@ public:
             degreesPtr,
             internalDegsPtr
         );
-        fflush(stdout);
     }
 
     std::vector<int> getActiveEdgeMap(GraphManager& gm) const {
@@ -513,6 +516,10 @@ public:
 
         // inspect(clusterLabels, numActiveClusters);
 
+        // label_t largestActiveLabel;
+        // cudaMemcpy(&largestActiveLabel, maxLabel, sizeof(label_t), cudaMemcpyDeviceToHost);
+        // std::cout << "largestActiveLabel " << largestActiveLabel << std::endl;
+
         thrust::for_each_n(
             thrust::device,
             thrust::make_counting_iterator(0),
@@ -548,6 +555,8 @@ public:
                     return;
                 }
 
+                auto ix = sc - sweepCutPtr;
+
                 // if (lNode.clusterId != sc->clusterId) {
                 //     printf("ERRORRR!!!! clusterId does not match sweep cut!\n\t%d is the clusterId, this is the scId: %d\t[sparsity = %f, offset = %d], also index = %lld and numClusters: %d\n", lNode.clusterId, scData.clusterId, scData.sparsity, scData.offset, index, clusterCount);
                 // }
@@ -558,7 +567,12 @@ public:
 
                 // printf("Node %d has offset %d threshold is > %d\n", lNode.nix, scNode.offsetInCluster, sc->offset);
                 if(scNode.offsetInCluster > sc->offset) { // TODO: should be > not >=
-                    label_t updatedLabel = lNode.clusterId + *maxLabel + 1;
+                    int64_t updatedLabel = static_cast<int64_t>(ix) + static_cast<int64_t>(*maxLabel) + 1;
+
+                    if (updatedLabel > 2147483647) {
+                        printf("ERROR: Label-overflow!!\n");
+                    }
+
                     // printf("Cluster %d is split into two parts -> new label for nix = %d is %d, because maxLabel = %d\n", lNode.clusterId, lNode.nix, updatedLabel, *maxLabel);
                     labeledNodesPtr[idx].clusterId = updatedLabel;
                     allLabelsPtr[lNode.nix] = updatedLabel;
@@ -590,14 +604,14 @@ public:
                     return;
                 }
 
-                const int* it = thrust::lower_bound(
+                const label_t* it = thrust::lower_bound(
                     thrust::seq,
                     uniqueLabelsPtr,
                     uniqueLabelsPtr + numClusters,
                     label
                 );
                 if (it == (uniqueLabelsPtr + numClusters) || *it != label) {
-                    printf("ERROR: could not find clusterData for node %d with label%d\n", lNode.nix, label);
+                    printf("ERROR: could not find clusterData for node %d with label %d\n", lNode.nix, label);
                     return;
                 }
                 const int index = static_cast<int>(it - uniqueLabelsPtr);
@@ -764,6 +778,46 @@ public:
 
         return {labels, num_unique };
     }
+
+    void checkInvariants(GraphManager& gm, Graph& gr) {
+        thrust::host_vector<LabeledNode> lNodes = activeNodes;
+        thrust::host_vector<label_t> labels = allLabels;
+
+        for (NodeIx i = 0; i < numActiveNodes; i++) {
+            assert(lNodes[i].nix < numNodes);
+            // labels match
+            assert(lNodes[i].clusterId == labels[lNodes[i].nix]);
+        }
+
+        thrust::host_vector<NodeIx> neighbors = gm.getNeighbors();
+
+        // This automatically handles the GPU-to-CPU copy cleanly under the hood
+        for (NodeIx i = 0; i < numNodes; i++) {
+            label_t myLabel = labels[i];
+            EdgeIx eix = gr.ranges[i];
+            EdgeIx end = gr.ranges[i+1];
+            while (eix != end) {
+                NodeIx nb = gr.edges[eix];
+                label_t nbLabel = labels[nb];
+
+                NodeIx nbGPU = neighbors[eix];
+
+                if (nbGPU == INVALID_EDGE) {
+                    assert(myLabel != nbLabel && "Deleted an edge that should not be deleted");
+                } else {
+                    if (myLabel != nbLabel) {
+                        std::cerr << "Should have deleted edge " << i << " -> " << nb << std::endl;
+                    }
+                    assert(nb == nbGPU);
+                    assert(myLabel == nbLabel && "Did not delete an edge that should be deleted");
+                }
+
+                ++eix;
+            }
+        }
+
+    }
+
 
     /**
      * Restore nix-order, i.e., invariant that partition[i].nix == i

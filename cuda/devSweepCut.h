@@ -510,7 +510,7 @@ inline void SweepCutManager::prepare_nodes(GraphManager& gm, PartitionManager& p
     // the number of remaining active nodes
     pm.numActiveNodes -= inactiveElements;
 
-    if (inactiveElements) std::cout << "Deactivating " << inactiveElements << " nodes in this iteration!" << std::endl;
+    // if (inactiveElements) std::cout << "Deactivating " << inactiveElements << " nodes in this iteration!" << std::endl;
 
     // std::vector<label_t> hlbls(pm.numActiveNodes);
     // thrust::copy(activeLabels, activeLabels + pm.numActiveNodes, hlbls.begin());

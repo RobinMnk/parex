@@ -19,7 +19,11 @@ struct CudaDeviceManager::Impl {
     std::unique_ptr<SweepCutManager> sc;
     std::unique_ptr<ConsolidationManager> cm;
 
+    Graph gr;
+
     void initialize(const Graph& graph) {
+        gr = graph;
+
         gm.reset();
         pt.reset();
         rw.reset();
@@ -147,7 +151,6 @@ struct CudaDeviceManager::Impl {
         // }
         // std::cout << std::endl;
 
-        // printPartition();
 
         pt->disableEdges(*gm);
         // fflush(stdout);
@@ -156,13 +159,15 @@ struct CudaDeviceManager::Impl {
         //
         // inspect(pt->getAllInternalDegrees(), gm->n);
 
+        // printPartition();
+        // pt->checkInvariants(*gm, gr);
     }
 
     inline void expanderDecomposition();
 
     AllSweepCuts getSweepCuts() {
         NodeIx numActiveClusters = pt->numActiveClusters;
-        std::vector<int> clusterIds(numActiveClusters);
+        std::vector<label_t> clusterIds(numActiveClusters);
         std::vector<SweepCutData> cuts(numActiveClusters);
         thrust::copy(pt->getUniqueActiveLabels().begin(), pt->getUniqueActiveLabels().begin() + numActiveClusters, clusterIds.begin());
         thrust::copy(sc->getSweepCuts().begin(), sc->getSweepCuts().begin() + numActiveClusters, cuts.begin());
@@ -318,16 +323,16 @@ void CudaDeviceManager::Impl::expanderDecomposition() {
         //     walkReset *= 2;
         // }
 
-        std::cout << ("Random Walk Step") << std::endl;
+        // std::cout << ("Random Walk Step") << std::endl;
         iterateRandomWalk();
         // }
 
-        std::cout << ("Compute SweepCuts") << std::endl;
+        // std::cout << ("Compute SweepCuts") << std::endl;
         computeSweepCuts();
 
         if (pt->numActiveNodes == 0) break;
 
-        std::cout << ("Adjust Partition") << std::endl;
+        // std::cout << ("Adjust Partition") << std::endl;
         cutClusters();
     }
     if (i >= MAX_NUM_ITER) {
@@ -337,7 +342,7 @@ void CudaDeviceManager::Impl::expanderDecomposition() {
 
     auto tm = t.timeSeconds();
     // printf("%d iterations with %fs per iteration\n", i, (float) tm / i);
-    printf("==================================================================================== \niterations: %d\n", i);
+    // printf("==================================================================================== \niterations: %d\n", i);
 
 
     // printf("Before cutting\n");
