@@ -159,7 +159,7 @@ void fusedRandomWalk_WarpParallel(
 
         const EdgeIx nbDeg = __ldg(&clusterDegrees[nb]);
         if (nbDeg <= 0) {
-            printf("ERROR: degree should never be 0!!\n");
+            printf("ERROR: degree should never be 0!!\t[nix = %d] edge from %d [eix=%d]\n", nb, nix, j);
             continue;
         }
         local_sum += __ldg(&dist[nb]) / static_cast<double>(nbDeg);
@@ -316,6 +316,7 @@ public:
             dist.Alternate(),
             packedKeys.Current()
         );
+        fflush(stdout);
 
         dist.selector ^= 1;
     }

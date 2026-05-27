@@ -76,15 +76,34 @@ struct CudaDeviceManager::Impl {
         );
     }
 
+    void printPartition() {
+        std::vector<LabeledNode> lNodes(pt->numActiveNodes);
+        std::vector<label_t> labels(pt->numActiveNodes);
+        thrust::copy(pt->getAllLabels().begin(), pt->getAllLabels().begin() + pt->numActiveNodes, labels.begin());
+        thrust::copy(pt->getActiveNodes().begin(), pt->getActiveNodes().begin() + pt->numActiveNodes, lNodes.begin());
+
+        for (NodeIx i = 0; i < pt->numActiveNodes; i++) {
+            printf("(%d, %d = %d), ", lNodes[i].nix, lNodes[i].clusterId, labels[lNodes[i].nix]);
+        }
+        printf("\n");
+        fflush(stdout);
+    }
+
     void cutClusters() {
         // TODO: if there are no valid sweep cuts (all above the threshold) -> continue!
-        if (sc->numClustersWithCut == 0) return;
 
-        inspect(pt->getUniqueActiveLabels(), pt->numActiveClusters);
+        // inspect(pt->getUniqueActiveLabels(), pt->numActiveClusters);
 
-        pt->cutClusters(sc->getScNodeData(), sc->getSweepCuts(), sc->numClustersWithCut);
+        if (sc->numClustersWithCut > 0) {
+            pt->cutClusters(sc->getScNodeData(), sc->getSweepCuts(), sc->numClustersWithCut);
+            fflush(stdout);
+        }
 
-        inspect(pt->getUniqueActiveLabels(), pt->numActiveClusters);
+        // FinalPartition fp = getFinalPartition();
+        // for (NodeIx i = 0; i < gm->n; i++) {
+        //     printf("node %d has label %d\n", i, fp.clusterIds[i]);
+        // }
+        // fflush(stdout);
 
         // std::vector<NodeData> nodes(gm->n);
         // thrust::device_ptr<NodeData> dev_ptr(pt->getPartitionView().Current());
@@ -102,15 +121,20 @@ struct CudaDeviceManager::Impl {
         //     printf("Node %d has label %d\n", nodes[i].nix, nodes[i].label);
         // }
 
+        printPartition();
 
         pt->computeClusterData(rw->getValues());
 
+        // inspect(pt->getUniqueActiveLabels(), pt->numActiveClusters);
 
-        inspect(pt->getUniqueActiveLabels(), pt->numActiveClusters);
+        // pt->recenterAndDeactivateClusters(rw->getValues(), sc->d_smallestLabel);
 
-        pt->recenterAndDeactivateClusters(rw->getValues());
-
-        inspect(pt->getUniqueActiveLabels(), pt->numActiveClusters);
+        // inspect(pt->getUniqueActiveLabels(), pt->numActiveClusters);
+        // fp = getFinalPartition();
+        // for (NodeIx i = 0; i < gm->n; i++) {
+        //     printf("node %d has label %d\n", i, fp.clusterIds[i]);
+        // }
+        // fflush(stdout);
 
         // absolutely crucial!!
         // fixupPartition();
@@ -122,9 +146,15 @@ struct CudaDeviceManager::Impl {
         // }
         // std::cout << std::endl;
 
-        pt->disableEdges(*gm);
+        printPartition();
 
-        pt->computeActiveDegrees(*gm);
+        pt->disableEdges(*gm);
+        fflush(stdout);
+
+        inspect(gm->getNeighbors(), 2*gm->m);
+
+        inspect(pt->getAllInternalDegrees(), gm->n);
+
     }
 
     inline void expanderDecomposition();

@@ -80,16 +80,18 @@ __global__
 void disableEdgesKernel_node(
     const NodeIx numActiveNodes,
     const LabeledNode* __restrict__ nodes,
+    const label_t* __restrict__ allLabels,
     NodeIx* __restrict__ neighbors,
     const EdgeIx* __restrict__ ranges,
-    const EdgeIx* __restrict__ degrees
+    const EdgeIx* __restrict__ degrees,
+    NodeIx* __restrict__ internalDegrees
 ) {
     const size_t warpId = (blockIdx.x * blockDim.x + threadIdx.x) / WARP;
     const size_t lane   = threadIdx.x & 31;
     if (warpId >= numActiveNodes) return;
 
     NodeIx nix = 0;
-    int64_t myLabel = 0;
+    label_t myLabel = 0;
     EdgeIx start = 0, degree = 0;
 
     // Only Lane 0 issues the memory requests
@@ -115,13 +117,26 @@ void disableEdgesKernel_node(
         return;
     }
 
+    NodeIx deg = 0;
     for (EdgeIx j = start + lane; j < end; j += WARP) {
         const NodeIx nb = __ldg(&neighbors[j]);
         if (nb == INVALID_EDGE) continue;
-        const label_t otherLabel = nodes[nb].clusterId;
+        const label_t otherLabel = allLabels[nb];
         if (myLabel != otherLabel) {
             neighbors[j] = INVALID_EDGE;
+            printf("Disabling edge %d -> %d\t[eix: %d]\n", nix, nb, j);
+        } else {
+            deg++;
         }
+    }
+
+#pragma unroll
+    for (int offset = 16; offset > 0; offset /= 2) {
+        deg += __shfl_down_sync(0xffffffff, deg, offset);
+    }
+
+    if (lane == 0) {
+        internalDegrees[nix] = deg;
     }
 }
 
@@ -156,6 +171,13 @@ struct RangeExtractorOp {
     __device__
     EdgeIx operator()(const LabeledNode lNode) const {
         return rangesPtr[lNode.nix + offset];
+    }
+};
+
+struct LabelExtractor {
+    __host__ __device__
+    label_t operator()(const LabeledNode lNode) const {
+        return lNode.clusterId;
     }
 };
 
@@ -415,16 +437,21 @@ public:
         const EdgeIx* rangesPtr = thrust::raw_pointer_cast(gm.getRanges().data());
         const EdgeIx* degreesPtr = thrust::raw_pointer_cast(gm.getDegrees().data());
         const LabeledNode* nodes = thrust::raw_pointer_cast(activeNodes.data());
+        const label_t* labelsPtr = thrust::raw_pointer_cast(allLabels.data());
+        NodeIx* internalDegsPtr = thrust::raw_pointer_cast(allInternalDegrees.data());
 
         const size_t gridSize = getGridSize(numActiveNodes);
 
         disableEdgesKernel_node<<<gridSize, threads>>>(
             numActiveNodes,
             nodes,
+            labelsPtr,
             neighborsPtr,
             rangesPtr,
-            degreesPtr
+            degreesPtr,
+            internalDegsPtr
         );
+        fflush(stdout);
     }
 
     std::vector<int> getActiveEdgeMap(GraphManager& gm) const {
@@ -469,6 +496,10 @@ public:
                 const NodeData& scNode = scNodeDataPtr[idx];
                 LabeledNode lNode = labeledNodesPtr[idx];
 
+                if (scNode.nix != lNode.nix) {
+                    printf("ERROR: scNode.nix != lNode.nix:  %d != %d\n", scNode.nix, lNode.nix);
+                }
+
                 if (lNode.clusterId < 0) {
                     // cluster already inactive - this should actually never happen now!
                     printf("ERROR: Considering inactive node in recenterAndDeactivateClusters! It has label %d\n", lNode.clusterId);
@@ -500,16 +531,18 @@ public:
 
                 }
 
-                if(scNode.offsetInCluster > sc->offset) {
-                    labeledNodesPtr[idx].clusterId = lNode.clusterId + maxLabel + 1;
-                    allLabelsPtr[lNode.nix] = lNode.clusterId;
-                    printf("Cluster %d is split into two parts -> new label = %d, because maxLabel = %d\n", lNode.clusterId, labeledNodesPtr[idx].clusterId, maxLabel);
+                printf("Node %d has offset %d threshold is > %d\n", lNode.nix, scNode.offsetInCluster, sc->offset);
+                if(scNode.offsetInCluster >= sc->offset) { // TODO: should be > not >=
+                    label_t updatedLabel = lNode.clusterId + maxLabel + 1;
+                    labeledNodesPtr[idx].clusterId = updatedLabel;
+                    allLabelsPtr[lNode.nix] = updatedLabel;
+                    printf("Cluster %d is split into two parts -> new label for nix = %d is %d, because maxLabel = %d\n", lNode.clusterId, lNode.nix, updatedLabel, maxLabel);
                 }
             }
         );
     }
 
-    void recenterAndDeactivateClusters(double* dist) {
+    void recenterAndDeactivateClusters(double* dist, const label_t* smallestLabel) {
         // subtract average from each (active) node
         const ClusterData* clusterDataPtr = thrust::raw_pointer_cast(clusterData.data());
         const label_t* uniqueLabelsPtr = thrust::raw_pointer_cast(clusterLabels.data());
@@ -517,13 +550,12 @@ public:
 
         const float walk_threshold = rw_threshold;
         const NodeIx numClusters = numActiveClusters;
-        const label_t smallestLabel = clusterLabels.front();
 
         thrust::for_each_n(
             thrust::device,
             activeNodes.begin(),
             numActiveNodes,
-            [clusterDataPtr, uniqueLabelsPtr, dist, allLabelsPtr, walk_threshold, smallestLabel, numClusters] __device__ (LabeledNode lNode) {
+            [clusterDataPtr, uniqueLabelsPtr, dist, allLabelsPtr, walk_threshold, smallestLabel, numClusters] __device__ (LabeledNode& lNode) {
                 const label_t label = lNode.clusterId;
 
                 if (label < 0) {
@@ -563,8 +595,8 @@ public:
 
                 if (clusterPotential < walk_threshold || cd.totalElements < 2) {
                     // this cluster should be deactivated
-                    // printf("Deactivating cluster: %d -> %d \t smallest: %d\n", label, smallestLabel - data.label - 1, smallestLabel);
-                    const label_t updatedLabel = smallestLabel - label - 1;
+                    const label_t updatedLabel = *smallestLabel - label - 1;
+                    printf("Deactivating cluster: %d -> %d \t smallest: %d\n", lNode.clusterId, updatedLabel, *smallestLabel);
                     lNode.clusterId = updatedLabel;
                     allLabelsPtr[lNode.nix] = updatedLabel;
                 } else {
@@ -640,12 +672,12 @@ public:
         return gm.m - total_active / 2;
     }
 
-    void computeActiveDegrees(GraphManager& gm) {
+    void computeActiveDegreesOLD(GraphManager& gm) {
         const EdgeIx* rangesPtr = thrust::raw_pointer_cast(gm.getRanges().data());
 
         const auto input_iter = thrust::make_transform_iterator(
                 gm.getNeighbors().begin(),
-            [] __device__ (const NodeIx nb) { return nb == INVALID_EDGE ? 1 : 0; }
+            [] __device__ (const NodeIx nb) { return nb == INVALID_EDGE ? 0 : 1; }
         );
 
         const auto ranges_begin_iter = thrust::make_transform_iterator(
@@ -656,15 +688,24 @@ public:
             activeNodes.begin(), RangeExtractorOp(rangesPtr, 1)
         );
 
+        // writes output to internalDegs[lNode[i].nix]
+        auto writer = thrust::make_permutation_iterator(
+            allInternalDegrees.begin(),
+            thrust::make_transform_iterator(
+                activeNodes.begin(),LabelExtractor()
+            )
+        );
+
+
+        // TODO: this does not work!! CUB cannot do this random jumping between segments!!
         cub::DeviceSegmentedReduce::Sum(
             tempStorageReduce,
             tempBytesReduce,
             input_iter,
-            thrust::raw_pointer_cast(allInternalDegrees.data()),
+            writer,
             static_cast<int>(numActiveNodes),
             ranges_begin_iter,
-            ranges_end_iter,
-            nullptr
+            ranges_end_iter
         );
     }
 
