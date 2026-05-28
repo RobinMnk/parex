@@ -190,10 +190,70 @@ void fusedRandomWalk_WarpParallel(
         // }
 
         // Prepare for Sweep Cut sort
-        // TODO: needs that myLabel fits in a uint32_t, i.e. is less than 4.294.967.295
         packedKeys[warpId] = packKey(myLabel, static_cast<float>(nodeVal));
     }
 }
+
+
+
+
+__global__
+void randomWalkStep(
+    NodeIx numActiveNodes,
+    const LabeledNode* __restrict__ activeNodes,
+    const NodeIx* __restrict__ neighbors,
+    const EdgeIx* __restrict__ ranges,
+    const EdgeIx* __restrict__ degrees,
+    const EdgeIx* __restrict__ clusterDegrees,
+    const double* __restrict__ dist,
+    double* __restrict__ new_dist,
+    uint64_t* __restrict__ packedKeys
+) {
+    const NodeIx i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= numActiveNodes) return;
+
+    NodeIx nix = 0;
+    int64_t myLabel = 0;
+    EdgeIx start = 0, degree = 0;
+
+    const LabeledNode& lNode = activeNodes[i];
+    nix     = lNode.nix;
+    myLabel = lNode.clusterId;
+    start   = __ldg(&ranges[nix]);
+    degree  = __ldg(&degrees[nix]);
+
+
+    const EdgeIx end = start + degree;
+
+    if (myLabel < 0) {
+        // These are the nodes that were just deactivated in the last iteration
+        packedKeys[i] = packKey(myLabel, 0);
+        return;
+    }
+
+    double local_sum = 0.0;
+    for (EdgeIx j = start; j < end; j++) {
+        const NodeIx nb = __ldg(&neighbors[j]);
+
+        if (nb == INVALID_EDGE) continue; // this skips edges between different clusters
+
+        const EdgeIx nbDeg = __ldg(&clusterDegrees[nb]);
+        if (nbDeg <= 0) {
+            printf("ERROR: degree should never be 0!!\t[nix = %d] edge from %d [eix=%d]\n", nb, nix, j);
+            continue;
+        }
+        local_sum += __ldg(&dist[nb]) / static_cast<double>(nbDeg);
+    }
+
+    const double oldVal = dist[nix];
+    const double nodeVal = (local_sum * (1.0 - rw_stay)) + (oldVal * rw_stay);
+
+    new_dist[nix] = nodeVal;
+    // Prepare for Sweep Cut sort
+    packedKeys[i] = packKey(myLabel, static_cast<float>(nodeVal));
+}
+
+
 
 
 // struct LabelExtractorRW {

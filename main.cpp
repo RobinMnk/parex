@@ -45,7 +45,7 @@ int main(int argc, char* argv[]) {
     cuda.initialize(G);
     cuda.expanderDecomposition();
     // auto pt = cuda.downloadLabels();
-    auto timeMicros = t2.timeMicros();
+    auto timeMillis = t2.timeMillis();
     // int numClusters = cuda.getNumClusters();
     FinalPartition fpt = cuda.getFinalPartition();
     // printf("Terminated after %fs\t-> %d clusters.\n", tm, fpt.numClusters);
@@ -55,10 +55,10 @@ int main(int argc, char* argv[]) {
     std::vector<NodeIx> mod;
     part.splitByIndices<false, false>(0, fpt.clusterIds, fpt.numClusters, mod);
 
-    EdgeIx cudaCutEdges = cuda.getNumCutEdges();
+    // EdgeIx cudaCutEdges = cuda.getNumCutEdges();
 
-    printf("time: %lld\nnumClusters: %d\ncutEdges: %d\nnodes: %d\nedges: %d\n", timeMicros, part.numClusters(), part.getNumCutEdges(), G.numNodes, G.numEdges);
-    printf("Cuda Cut Edges: %d\n", cudaCutEdges);
+    printf("time: %lld\nnumClusters: %d\ncutEdges: %d\nnodes: %d\nedges: %d\n", timeMillis, part.numClusters(), part.getNumCutEdges(), G.numNodes, G.numEdges);
+    // printf("Cuda Cut Edges: %d\n", cudaCutEdges);
 
     // printf(" -> Partition has %d clusters and cuts %d edges\t[computed in %fs]", part.numClusters(), part.getNumCutEdges(), t2.timeSeconds());
 }

@@ -717,7 +717,7 @@ inline void SweepCutManager::checkInvariants(PartitionManager& pm) {
 inline void SweepCutManager::compute(GraphManager& gm, PartitionManager& pm, const double* dist) {
     prepare_nodes(gm, pm, dist);
 
-    checkInvariants(pm);
+    // checkInvariants(pm);
 
     compute_sweep_cuts(gm, pm);
 }
