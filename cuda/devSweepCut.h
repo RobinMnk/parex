@@ -31,8 +31,10 @@ void nodeDiffKernel_Sparse_WarpParallel(
     NodeData* __restrict__ nodeData
 ) {
     const unsigned int warpId = (blockIdx.x * blockDim.x + threadIdx.x) / WARP;
-    const unsigned int lane   = threadIdx.x & 31;
+    const unsigned int lane   = threadIdx.x & WARPMASK;
     if (warpId >= numActiveNodes) return;
+
+    const unsigned int SUBMASK = BASE_SUBWARP_MASK << (threadIdx.x & ~WARPMASK);
 
     NodeIx nix = 0;
     uint64_t myKey = 0;
@@ -51,11 +53,11 @@ void nodeDiffKernel_Sparse_WarpParallel(
     }
 
     // Broadcast the uniform values to all lanes in 1 clock cycle
-    nix     = __shfl_sync(0xffffffff, nix, 0);
-    myLabel = __shfl_sync(0xffffffff, myLabel, 0);
-    start   = __shfl_sync(0xffffffff, start, 0);
-    degree  = __shfl_sync(0xffffffff, degree, 0);
-    myKey   = __shfl_sync(0xffffffff, myKey, 0);
+    nix     = __shfl_sync(SUBMASK, nix, 0);
+    myLabel = __shfl_sync(SUBMASK, myLabel, 0);
+    start   = __shfl_sync(SUBMASK, start, 0);
+    degree  = __shfl_sync(SUBMASK, degree, 0);
+    myKey   = __shfl_sync(SUBMASK, myKey, 0);
 
     const EdgeIx end = start + degree;
 
@@ -95,8 +97,8 @@ void nodeDiffKernel_Sparse_WarpParallel(
     }
 
     #pragma unroll
-    for (int offset = 16; offset > 0; offset >>= 1)
-        nodeContribution += __shfl_down_sync(0xffffffff, nodeContribution, offset);
+    for (int offset = WARP / 2; offset > 0; offset >>= 1)
+        nodeContribution += __shfl_down_sync(SUBMASK, nodeContribution, offset);
 
     if (lane == 0) {
         nodeData[warpId].nix                = nix;
@@ -445,7 +447,7 @@ inline void SweepCutManager::prepare_nodes(GraphManager& gm, PartitionManager& p
     // printf("\n");
     // fflush(stdout);
 
-    const size_t numBlocks = getGridSize(gm.n);
+    const size_t numBlocks = getGridSizeWarpParallel(pm.numActiveNodes);
 
     nodeDiffKernel_Sparse_WarpParallel<<<numBlocks, threads>>>(
         pm.numActiveNodes,

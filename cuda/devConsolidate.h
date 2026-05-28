@@ -45,20 +45,23 @@ void linkEdges_kernel_edgeView(
 
 __global__
 void linkEdges_kernel_nodeView(
-    const NodeIx numNodes,
+    const NodeIx numActiveNodes,
     const LabeledNode* __restrict__ nodes,
     const NodeIx* __restrict__ neighbors,
     const EdgeIx* __restrict__ ranges,
     const EdgeIx* __restrict__ degrees,
+    const label_t* __restrict__ labels,
     NodeIx* __restrict__ parent,
     int* __restrict__ d_changed
 ) {
     const size_t warpId = (blockIdx.x * blockDim.x + threadIdx.x) / WARP;
-    const size_t lane   = threadIdx.x & 31;
-    if (warpId >= numNodes) return;
+    const size_t lane   = threadIdx.x & WARPMASK;
+    if (warpId >= numActiveNodes) return;
+
+    const unsigned int SUBMASK = BASE_SUBWARP_MASK << (threadIdx.x & ~WARPMASK);
 
     NodeIx nix = 0, myParent = 0;
-    int64_t myLabel = 0;
+    label_t myLabel = 0;
     EdgeIx start = 0, degree = 0;
 
     // Only Lane 0 issues the memory requests to the uniform addresses
@@ -72,11 +75,11 @@ void linkEdges_kernel_nodeView(
     }
 
     // Broadcast the uniform values to all lanes
-    nix     = __shfl_sync(0xffffffff, nix, 0);
-    myLabel = __shfl_sync(0xffffffff, myLabel, 0);
-    start   = __shfl_sync(0xffffffff, start, 0);
-    degree  = __shfl_sync(0xffffffff, degree, 0);
-    myParent = __shfl_sync(0xffffffff, myParent, 0);
+    nix     = __shfl_sync(SUBMASK, nix, 0);
+    myLabel = __shfl_sync(SUBMASK, myLabel, 0);
+    start   = __shfl_sync(SUBMASK, start, 0);
+    degree  = __shfl_sync(SUBMASK, degree, 0);
+    myParent = __shfl_sync(SUBMASK, myParent, 0);
 
     const EdgeIx end = start + degree;
 
@@ -89,6 +92,9 @@ void linkEdges_kernel_nodeView(
         const NodeIx nb = __ldg(&neighbors[j]);
 
         if (nb == INVALID_EDGE) continue;
+
+        const label_t nbLabel = __ldg(&labels[nb]);
+        if (nbLabel != myLabel) continue;
 
         const NodeIx otherParent = __ldg(&parent[nb]);
 
@@ -121,6 +127,7 @@ void compress_kernel(NodeIx* __restrict__ parent, NodeIx numNodes) {
 __global__
 void assignRootAsLabel_kernel(
     LabeledNode* __restrict__ nodes,
+    label_t* __restrict__ labels,
     const NodeIx* __restrict__ parent,
     NodeIx numNodes
 ) {
@@ -129,7 +136,9 @@ void assignRootAsLabel_kernel(
 
     // Only update nodes that are part of an active cluster
     if (nodes[i].clusterId >= 0) {
-        nodes[i].clusterId = static_cast<int>(parent[nodes[i].nix]);
+        label_t l = static_cast<label_t>(parent[nodes[i].nix]);
+        nodes[i].clusterId = l;
+        labels[nodes[i].nix] = l;
     }
 }
 
@@ -150,28 +159,34 @@ public:
         cudaFree(d_changed);
     }
 
-    void consolidate(GraphManager& gm, thrust::device_vector<LabeledNode>& labeledNodes, NodeIx numActiveNodes);
+    void consolidate(GraphManager& gm, thrust::device_vector<LabeledNode>& labeledNodes, thrust::device_vector<label_t>& labels, NodeIx numActiveNodes);
 
 };
 
-inline void ConsolidationManager::consolidate(GraphManager& gm, thrust::device_vector<LabeledNode>& labeledNodes, NodeIx numActiveNodes) {
+inline void ConsolidationManager::consolidate(
+    GraphManager& gm,
+    thrust::device_vector<LabeledNode>& labeledNodes,
+    thrust::device_vector<label_t>& labels,
+    NodeIx numActiveNodes
+) {
     const NodeIx* neighborsPtr = thrust::raw_pointer_cast(gm.getNeighbors().data());
     const NodeIx* rangesPtr = thrust::raw_pointer_cast(gm.getRanges().data());
     const EdgeIx* degreesPtr = thrust::raw_pointer_cast(gm.getDegrees().data());
+    label_t* labelsPtr = thrust::raw_pointer_cast(labels.data());
     NodeIx* parentsPtr = thrust::raw_pointer_cast(parentLabels.data());
     LabeledNode* nodes = thrust::raw_pointer_cast(labeledNodes.data());
 
-    thrust::sequence(thrust::device, parentLabels.begin(), parentLabels.begin() + numActiveNodes);
+    thrust::sequence(thrust::device, parentLabels.begin(), parentLabels.begin() + numNodes);
 
     int h_changed = 1;
-    size_t edgeBlocks = (totalEdges + threads - 1) / threads;
-    size_t nodeBlocks = (numNodes + threads - 1) / threads;
+    size_t activeBlocks = getGridSizeWarpParallel(numActiveNodes);
+    size_t nodeBlocks = getGridSize(numNodes);
 
     while (h_changed) {
         cudaMemsetAsync(d_changed, 0, sizeof(int));
 
         // 1. Hook nodes together
-        linkEdges_kernel_nodeView<<<edgeBlocks, threads>>>(numActiveNodes, nodes, neighborsPtr, rangesPtr, degreesPtr, parentsPtr, d_changed);
+        linkEdges_kernel_nodeView<<<activeBlocks, threads>>>(numActiveNodes, nodes, neighborsPtr, rangesPtr, degreesPtr, labelsPtr, parentsPtr, d_changed);
 
         // 2. Multi-pass compress to flatten trees created in the link step
         // Running this 2-3 times per link significantly speeds up convergence
@@ -182,7 +197,8 @@ inline void ConsolidationManager::consolidate(GraphManager& gm, thrust::device_v
         cudaMemcpy(&h_changed, d_changed, sizeof(int), cudaMemcpyDeviceToHost);
     }
 
-    assignRootAsLabel_kernel<<<nodeBlocks, threads>>>(nodes, parentsPtr, numNodes);
+    size_t assignBlocks = getGridSize(numActiveNodes);
+    assignRootAsLabel_kernel<<<assignBlocks, threads>>>(nodes, labelsPtr, parentsPtr, numActiveNodes);
 }
 
 

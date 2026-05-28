@@ -88,8 +88,10 @@ void disableEdgesKernel_node(
     NodeIx* __restrict__ internalDegrees
 ) {
     const size_t warpId = (blockIdx.x * blockDim.x + threadIdx.x) / WARP;
-    const size_t lane   = threadIdx.x & 31;
+    const size_t lane   = threadIdx.x & WARPMASK;
     if (warpId >= numActiveNodes) return;
+
+    const unsigned int SUBMASK = BASE_SUBWARP_MASK << (threadIdx.x & ~WARPMASK);
 
     NodeIx nix = 0;
     label_t myLabel = 0;
@@ -105,10 +107,10 @@ void disableEdgesKernel_node(
     }
 
     // Broadcast the values to all lanes
-    nix     = __shfl_sync(0xffffffff, nix, 0);
-    myLabel = __shfl_sync(0xffffffff, myLabel, 0);
-    start   = __shfl_sync(0xffffffff, start, 0);
-    degree  = __shfl_sync(0xffffffff, degree, 0);
+    nix     = __shfl_sync(SUBMASK, nix, 0);
+    myLabel = __shfl_sync(SUBMASK, myLabel, 0);
+    start   = __shfl_sync(SUBMASK, start, 0);
+    degree  = __shfl_sync(SUBMASK, degree, 0);
 
     const EdgeIx end = start + degree;
 
@@ -132,8 +134,8 @@ void disableEdgesKernel_node(
     }
 
 #pragma unroll
-    for (int offset = 16; offset > 0; offset /= 2) {
-        deg += __shfl_down_sync(0xffffffff, deg, offset);
+    for (int offset = WARP / 2; offset > 0; offset /= 2) {
+        deg += __shfl_down_sync(SUBMASK, deg, offset);
     }
 
     if (lane == 0) {
@@ -466,7 +468,7 @@ public:
         const label_t* labelsPtr = thrust::raw_pointer_cast(allLabels.data());
         NodeIx* internalDegsPtr = thrust::raw_pointer_cast(allInternalDegrees.data());
 
-        const size_t gridSize = getGridSize(numActiveNodes);
+        const size_t gridSize = getGridSizeWarpParallel(numActiveNodes);
 
         disableEdgesKernel_node<<<gridSize, threads>>>(
             numActiveNodes,

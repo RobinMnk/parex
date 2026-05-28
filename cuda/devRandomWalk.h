@@ -121,8 +121,10 @@ void fusedRandomWalk_WarpParallel(
     uint64_t* __restrict__ packedKeys
 ) {
     const size_t warpId = (blockIdx.x * blockDim.x + threadIdx.x) / WARP;
-    const size_t lane   = threadIdx.x & 31;
+    const size_t lane   = threadIdx.x & WARPMASK;
     if (warpId >= numNodes) return;
+
+    const unsigned int SUBMASK = BASE_SUBWARP_MASK << (threadIdx.x & ~WARPMASK);
 
     NodeIx nix = 0;
     int64_t myLabel = 0;
@@ -138,10 +140,10 @@ void fusedRandomWalk_WarpParallel(
     }
 
     // Broadcast the uniform values to all lanes in 1 clock cycle
-    nix     = __shfl_sync(0xffffffff, nix, 0);
-    myLabel = __shfl_sync(0xffffffff, myLabel, 0);
-    start   = __shfl_sync(0xffffffff, start, 0);
-    degree  = __shfl_sync(0xffffffff, degree, 0);
+    nix     = __shfl_sync(SUBMASK, nix, 0);
+    myLabel = __shfl_sync(SUBMASK, myLabel, 0);
+    start   = __shfl_sync(SUBMASK, start, 0);
+    degree  = __shfl_sync(SUBMASK, degree, 0);
 
     const EdgeIx end = start + degree;
 
@@ -167,8 +169,8 @@ void fusedRandomWalk_WarpParallel(
 
     // 3. Warp Reduction
     #pragma unroll
-    for (int offset = 16; offset > 0; offset >>= 1) {
-        local_sum += __shfl_down_sync(0xffffffff, local_sum, offset);
+    for (int offset = WARP / 2; offset > 0; offset >>= 1) {
+        local_sum += __shfl_down_sync(SUBMASK, local_sum, offset);
     }
 
     // 4. Finalize and Write-back (Only Lane 0)
@@ -303,7 +305,7 @@ public:
         thrust::device_vector<EdgeIx>& allInternalDegrees,
         NodeIx numActiveNodes
     ) {
-        const size_t gridSize = getGridSize(numActiveNodes);
+        const size_t gridSize = getGridSizeWarpParallel(numActiveNodes);
 
         fusedRandomWalk_WarpParallel<<<gridSize, threads>>>(
             numActiveNodes,

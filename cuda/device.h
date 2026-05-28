@@ -82,16 +82,20 @@ struct CudaDeviceManager::Impl {
 
     void printPartition() {
         std::cout << "Active Nodes: " << pt->numActiveNodes << " / " << gm->n << std::endl;
-        std::vector<LabeledNode> lNodes(pt->numActiveNodes);
-        std::vector<label_t> labels(gm->n);
-        thrust::copy(pt->getActiveNodes().begin(), pt->getActiveNodes().begin() + pt->numActiveNodes, lNodes.data());
-        thrust::copy(pt->getAllLabels().begin(), pt->getAllLabels().end(), labels.data());
+        thrust::host_vector<LabeledNode> lNodes = pt->getActiveNodes();
+        thrust::host_vector<label_t> labels = pt->getAllLabels();
 
         for (NodeIx i = 0; i < pt->numActiveNodes; i++) {
             printf("(%d, %d = %d), ", lNodes[i].nix, lNodes[i].clusterId, labels[lNodes[i].nix]);
         }
-        printf("\n");
+        printf("\n\n");
         fflush(stdout);
+
+        auto fp = getFinalPartition();
+        for (int ix = 0; ix < gm->n; ix++) {
+            std::cout << "(" << ix << ", " << fp.clusterIds[ix] << "),  ";
+        }
+        std::cout << "\n" << std::endl;
     }
 
     void cutClusters() {
@@ -118,7 +122,7 @@ struct CudaDeviceManager::Impl {
         //     printf("Node %d has label %d\n", nodes[i].nix, nodes[i].label);
         // }
 
-        // cm->consolidate(*gm, pt->getActiveNodes(), pt->numActiveNodes);
+        cm->consolidate(*gm, pt->getActiveNodes(), pt->getAllLabels(), pt->numActiveNodes);
 
         // thrust::copy(dev_ptr, dev_ptr + gm->n, nodes.begin());
         // printf("After Consolidate\n");
@@ -307,10 +311,11 @@ void CudaDeviceManager::Impl::expanderDecomposition() {
 
     // int walkReset = 128;
 
+    std::cout << "Begin Expander Decomposition" << std::endl;
     Timer t;
     t.start();
     while (i++ < MAX_NUM_ITER && pt->numActiveClusters > 0 && pt->numActiveNodes > 0) {
-        std::cout << "==================================================================================== \nBegin Iteration: " <<  (i) << std::endl;
+        // std::cout << "==================================================================================== \nBegin Iteration: " <<  (i) << std::endl;
 
         // #pragma unroll
         // for (int x = 0; x < NUM_RW_STEPS; x++) {
@@ -342,8 +347,13 @@ void CudaDeviceManager::Impl::expanderDecomposition() {
 
     auto tm = t.timeSeconds();
     // printf("%d iterations with %fs per iteration\n", i, (float) tm / i);
-    // printf("==================================================================================== \niterations: %d\n", i);
+    printf("==================================================================================== \niterations: %d\n", i);
 
+    // auto fp = getFinalPartition();
+    // for (int ix = 0; ix < gm->n; ix++) {
+    //     std::cout << "(" << ix << ", " << fp.clusterIds[ix] << "),  ";
+    //  }
+    // std::cout << std::endl;
 
     // printf("Before cutting\n");
     // printInf(labels, clusters, degs, scs, nodes);
