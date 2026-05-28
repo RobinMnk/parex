@@ -29,7 +29,15 @@ constexpr int threads = 256;
 constexpr int WARP = 32;
 constexpr int warpsPerBlock = threads / WARP;
 
+constexpr int WARPMASK = WARP-1;
+constexpr unsigned int BASE_SUBWARP_MASK = (WARP == 32) ? 0xFFFFFFFFU : ((1U << WARP) - 1U);
+
+
 inline unsigned int getGridSize(unsigned int n) {
+    return (n + threads - 1) / threads;
+}
+
+inline unsigned int getGridSizeWarpParallel(unsigned int n) {
     return (n + warpsPerBlock - 1) / warpsPerBlock;
 }
 
