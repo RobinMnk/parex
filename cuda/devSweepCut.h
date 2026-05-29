@@ -321,6 +321,9 @@ struct LabelFromKeyExtractor {
 struct CheckThreshold {
     const double threshold;
 
+    __host__ __device__
+    explicit CheckThreshold(const double threshold) : threshold(threshold) {}
+
     __device__
     bool operator()(const SweepCutData& scData) const {
         return scData.sparsity < threshold;
@@ -376,6 +379,25 @@ struct SweepCutTransform {
     const LabeledNode* lNodes;
     const NodeIx numClusters;
     const NodeIx lookupSize;
+
+    __host__ __device__
+    SweepCutTransform(
+        const NodeData* nodeDataPtr,
+        const label_t* uniqueLabelsPtr,
+        const label_t* labelLookupPtr,
+        const EdgeIx* clusterVolumesPtr,
+        const LabeledNode* lNodes,
+        const NodeIx numClusters,
+        const NodeIx lookupSize
+    ) :
+        nodeDataPtr(nodeDataPtr),
+        uniqueLabelsPtr(uniqueLabelsPtr),
+        labelLookupPtr(labelLookupPtr),
+        clusterVolumesPtr(clusterVolumesPtr),
+        lNodes(lNodes),
+        numClusters(numClusters),
+        lookupSize(lookupSize)
+    {}
 
     __host__ __device__
     SweepCutData operator()(const size_t idx) const {
