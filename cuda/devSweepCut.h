@@ -371,22 +371,27 @@ struct NodeDataScanOp {
 struct SweepCutTransform {
     const NodeData* nodeDataPtr;
     const label_t* uniqueLabelsPtr;
+    const label_t* labelLookupPtr;
     const EdgeIx* clusterVolumesPtr;
     const LabeledNode* lNodes;
     const NodeIx numClusters;
+    const NodeIx lookupSize;
 
     __host__ __device__
     SweepCutData operator()(const size_t idx) const {
         const NodeData nodeData     = nodeDataPtr[idx];
         const label_t label         = lNodes[idx].clusterId;
 
-        const label_t* tv = thrust::lower_bound(
-            thrust::seq,
-            uniqueLabelsPtr,
-            uniqueLabelsPtr + numClusters,
-            label
-        );
-        auto segment_index = tv - uniqueLabelsPtr;
+        label_t segment_index = -1;
+        if (label >= 0 && label < lookupSize) {
+            segment_index = labelLookupPtr[label];
+        }
+
+        if (segment_index < 0 || segment_index >= numClusters || uniqueLabelsPtr[segment_index] != label) {
+            printf("ERROR: could not find sweep-cut volume for label %d\n", label);
+            return { label, 2.0f, nodeData.offsetInCluster };
+        }
+
         const EdgeIx totalVol = clusterVolumesPtr[segment_index];
 
 
@@ -630,9 +635,20 @@ inline void SweepCutManager::compute_sweep_cuts(GraphManager& gm, PartitionManag
 
     // find best sweep cut for each cluster
 
+    pm.updateLabelLookup();
+
     const EdgeIx* clusterVolumesPtr = thrust::raw_pointer_cast(pm.getVolumes().data());
     const label_t* uniqueLabels = thrust::raw_pointer_cast(pm.getUniqueActiveLabels().data());
-    const SweepCutTransform scTransform(scNodeData.Current(), uniqueLabels, clusterVolumesPtr, lNodesPtr.get(), pm.numActiveClusters);
+    const label_t* labelLookup = thrust::raw_pointer_cast(pm.getLabelLookup().data());
+    const SweepCutTransform scTransform(
+        scNodeData.Current(),
+        uniqueLabels,
+        labelLookup,
+        clusterVolumesPtr,
+        lNodesPtr.get(),
+        pm.numActiveClusters,
+        gm.n
+    );
 
     thrust::reduce_by_key(
         thrust::device,

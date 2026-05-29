@@ -208,8 +208,9 @@ class PartitionManager {
     thrust::device_vector<label_t> clusterLabels;
     thrust::device_vector<EdgeIx> clusterVolumes;
     thrust::device_vector<ClusterData> clusterData;
+    thrust::device_vector<label_t> labelLookup;
+    thrust::device_vector<label_t> clusterNewLabels;
 
-    // thrust::device_vector<int> labelLookup;
     // thrust::device_vector<int> temp_keys;
     // uint64_t* sortedKeys;
 
@@ -238,7 +239,8 @@ public:
         clusterLabels(gm.n, 0),
         clusterVolumes(gm.n, 2 * gm.m),
         clusterData(gm.n),
-        // labelLookup(2 * gm.n + 1, -1),
+        labelLookup(gm.n, -1),
+        clusterNewLabels(gm.n, 0),
         // temp_keys(gm.n, 0),
         numActiveNodes{gm.n}
     {
@@ -389,6 +391,7 @@ public:
         // inspect(clusterLabels, numActiveClusters);
 
         numActiveClusters = end_iters_new.second - clusterData.begin();
+        updateLabelLookup();
 
 
         // thrust::sort_by_key(
@@ -607,16 +610,40 @@ public:
         // subtract average from each (active) node
         const ClusterData* clusterDataPtr = thrust::raw_pointer_cast(clusterData.data());
         const label_t* uniqueLabelsPtr = thrust::raw_pointer_cast(clusterLabels.data());
+        const label_t* labelLookupPtr = thrust::raw_pointer_cast(labelLookup.data());
+        const label_t* clusterNewLabelsPtr = thrust::raw_pointer_cast(clusterNewLabels.data());
         label_t* allLabelsPtr = thrust::raw_pointer_cast(allLabels.data());
 
         const float walk_threshold = rw_threshold;
         const NodeIx numClusters = numActiveClusters;
+        const NodeIx lookupSize = numNodes;
+
+        auto shouldKeepCluster = [walk_threshold] __device__ (const ClusterData& cd) -> label_t {
+            const float clusterPotential = cd.maxPotential - cd.minPotential;
+            return (clusterPotential >= walk_threshold && cd.totalElements >= 2) ? 1 : 0;
+        };
+
+        auto keepFlags = thrust::make_transform_iterator(clusterData.begin(), shouldKeepCluster);
+        const label_t numSurvivingClusters = thrust::reduce(
+            thrust::device,
+            keepFlags,
+            keepFlags + numActiveClusters,
+            static_cast<label_t>(0),
+            thrust::plus<label_t>()
+        );
+
+        thrust::exclusive_scan(
+            thrust::device,
+            keepFlags,
+            keepFlags + numActiveClusters,
+            clusterNewLabels.begin()
+        );
 
         thrust::for_each_n(
             thrust::device,
             activeNodes.begin(),
             numActiveNodes,
-            [clusterDataPtr, uniqueLabelsPtr, dist, allLabelsPtr, walk_threshold, smallestLabel, numClusters] __device__ (LabeledNode& lNode) {
+            [clusterDataPtr, uniqueLabelsPtr, labelLookupPtr, clusterNewLabelsPtr, dist, allLabelsPtr, walk_threshold, smallestLabel, numClusters, lookupSize] __device__ (LabeledNode& lNode) {
                 const label_t label = lNode.clusterId;
 
                 if (label < 0) {
@@ -626,27 +653,15 @@ public:
                     return;
                 }
 
-                const label_t* it = thrust::lower_bound(
-                    thrust::seq,
-                    uniqueLabelsPtr,
-                    uniqueLabelsPtr + numClusters,
-                    label
-                );
-                if (it == (uniqueLabelsPtr + numClusters) || *it != label) {
-                    printf("ERROR: could not find clusterData for node %d with label %d\n", lNode.nix, label);
+                if (label >= lookupSize) {
+                    printf("ERROR: label %d for node %d is outside labelLookup\n", label, lNode.nix);
                     return;
                 }
-                const int index = static_cast<int>(it - uniqueLabelsPtr);
 
-                // int correspondingSweepCutIndex = labelLookupPtr[label];
-
-                // if (comp != correspondingSweepCutIndex) {
-                //     printf("WARN: comp != correspondingSweepCutIndex \t %d != %d\n", comp, correspondingSweepCutIndex);
-                // }
-
-
-                if (uniqueLabelsPtr[index] != label) {
-                    printf("ERROR: label mismatch!! For nix = %d:\t%d != %d\n", lNode.nix, label, uniqueLabelsPtr[index]);
+                const label_t index = labelLookupPtr[label];
+                if (index < 0 || index >= numClusters || uniqueLabelsPtr[index] != label) {
+                    printf("ERROR: could not find clusterData for node %d with label %d\n", lNode.nix, label);
+                    return;
                 }
 
                 const ClusterData& cd = clusterDataPtr[index];
@@ -665,11 +680,16 @@ public:
                     lNode.clusterId = updatedLabel;
                     allLabelsPtr[lNode.nix] = updatedLabel;
                 } else {
+                    const label_t updatedLabel = clusterNewLabelsPtr[index];
                     const double average = cd.rwSum / static_cast<double>(cd.totalElements);
+                    lNode.clusterId = updatedLabel;
+                    allLabelsPtr[lNode.nix] = updatedLabel;
                     dist[lNode.nix] -= average;
                 }
             }
         );
+
+        numActiveClusters = numSurvivingClusters;
 
         // printf("After\n");
         // int x = computeClusterData(partition, uniqueLabels);
@@ -681,38 +701,29 @@ public:
     }
 
 
-    // void updateLabelLookup() {
-    //     const int* uniqueLabelsPtr = thrust::raw_pointer_cast(activeLabels.data());
-    //     int* lookupPtr = thrust::raw_pointer_cast(labelLookup.data());
-    //
-    //     auto populate_map = [uniqueLabelsPtr, lookupPtr] __device__ (const int i) {
-    //         int label = uniqueLabelsPtr[i];
-    //         if (label >= 0) {
-    //             lookupPtr[label] = i;
-    //         }
-    //     };
-    //
-    //     thrust::for_each(
-    //         thrust::device,
-    //         thrust::make_counting_iterator<NodeIx>(0),
-    //         thrust::make_counting_iterator(numActiveClusters),
-    //         populate_map
-    //     );
-    //
-    //
-    //     // std::vector<int> h_lookup(2*numNodes+1);
-    //     // thrust::copy(labelLookup.begin(), labelLookup.end(), h_lookup.begin());
-    //     // for (int i = 0; i < h_lookup.size(); ++i) {
-    //     //     int index = h_lookup[i];
-    //     //     if (index >= 0) {
-    //     //         printf("label %d -> %d\n", i, index);
-    //     //     }
-    //     // }
-    // }
+    void updateLabelLookup() {
+        const label_t* uniqueLabelsPtr = thrust::raw_pointer_cast(clusterLabels.data());
+        label_t* lookupPtr = thrust::raw_pointer_cast(labelLookup.data());
+        const NodeIx lookupSize = numNodes;
 
-    // auto& getLabelLookup() const  {
-    //     return labelLookup;
-    // }
+        thrust::for_each_n(
+            thrust::device,
+            thrust::make_counting_iterator<NodeIx>(0),
+            numActiveClusters,
+            [uniqueLabelsPtr, lookupPtr, lookupSize] __device__ (const NodeIx i) {
+                const label_t label = uniqueLabelsPtr[i];
+                if (label >= 0 && label < lookupSize) {
+                    lookupPtr[label] = static_cast<label_t>(i);
+                } else {
+                    printf("ERROR: active label %d cannot be stored in labelLookup of size %d\n", label, lookupSize);
+                }
+            }
+        );
+    }
+
+    thrust::device_vector<label_t>& getLabelLookup() {
+        return labelLookup;
+    }
     // auto& getActiveNodeLabels()  {
     //     return activeLabels;
     // }
