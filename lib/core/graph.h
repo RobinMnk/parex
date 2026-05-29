@@ -23,6 +23,10 @@ struct Edge {
     NodeIx fx{0}, tx{0}; // from index, to index
 //    Weight wgt{0};
 
+    Edge() = default;
+
+    Edge(NodeIx fx, NodeIx tx) : fx(fx), tx(tx) {}
+
     bool operator==(const Edge& other) const {
         return fx == other.fx && tx == other.tx;
     }
