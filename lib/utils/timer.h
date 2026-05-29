@@ -29,19 +29,19 @@ double Timer::timeSeconds() {
 
 long long Timer::timeMillis() {
     auto end = std::chrono::steady_clock::now(); // End time
-    auto ms = duration_cast<std::chrono::milliseconds>(end - startTime);
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - startTime);
     return ms.count(); // Return sorting time in seconds
 }
 
 long long Timer::timeMicros() {
     auto end = std::chrono::steady_clock::now(); // End time
-    auto ms = duration_cast<std::chrono::microseconds>(end - startTime);
+    auto ms = std::chrono::duration_cast<std::chrono::microseconds>(end - startTime);
     return ms.count(); // Return sorting time in seconds
 }
 
 long long Timer::timeNanos() {
     auto end = std::chrono::steady_clock::now(); // End time
-    auto ns = duration_cast<std::chrono::nanoseconds>(end - startTime);
+    auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - startTime);
     return ns.count(); // Return sorting time in seconds
 }
 

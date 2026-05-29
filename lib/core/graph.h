@@ -23,7 +23,9 @@ struct Edge {
     NodeIx fx{0}, tx{0}; // from index, to index
 //    Weight wgt{0};
 
-    bool operator==(const Edge& other) const = default;
+    bool operator==(const Edge& other) const {
+        return fx == other.fx && tx == other.tx;
+    }
 };
 
 class Graph {
@@ -89,7 +91,13 @@ public:
         return static_cast<EdgeIx>(std::distance(nbegin(node), nend(node)));
     }
 
-    bool operator==(const Graph& other) const = default;
+    bool operator==(const Graph& other) const {
+        return edges == other.edges
+            && ranges == other.ranges
+            && weights == other.weights
+            && numNodes == other.numNodes
+            && numEdges == other.numEdges;
+    }
 };
 
 class DynamicGraph {

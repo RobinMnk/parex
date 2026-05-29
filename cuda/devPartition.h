@@ -217,6 +217,13 @@ struct LabeledNodeLabelLess {
     }
 };
 
+struct SweepCutClusterLess {
+    __host__ __device__
+    bool operator()(const SweepCutData& element, label_t target) const {
+        return element.clusterId < target;
+    }
+};
+
 class PartitionManager {
     NodeIx numNodes;
     EdgeIx totalEdges;
@@ -578,9 +585,7 @@ public:
                     sweepCutPtr,
                     sweepCutPtr + clusterCount,
                     lNode.clusterId,
-                    [=] __host__ __device__ (const SweepCutData& element, label_t target) {
-                        return element.clusterId < target;
-                    }
+                    SweepCutClusterLess()
                 );
 
                 // lower bound returns the first value >= lNode.clusterId. It thus might return a larger value if there is no matching entry
