@@ -6,6 +6,7 @@
 #define PAREX_INTERFACE_H
 
 #include "core/graph.h"
+#include <memory>
 
 struct NodeUpdate {
     NodeIx nix;
