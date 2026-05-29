@@ -18,7 +18,7 @@ struct InitFunctor {
 
     explicit InitFunctor(const NodeIx* _ranges) : ranges(_ranges) {}
 
-    __device__
+    __host__ __device__
     NodeData operator()(const int i) const {
         NodeIx start = ranges[i];
         NodeIx end   = ranges[i+1];
@@ -34,7 +34,7 @@ struct InitFunctor {
 struct ActiveEdgeLogic {
     const NodeIx* neighbors;
 
-    __device__
+    __host__ __device__
     int operator()(EdgeIx edgeIdx) const {
         return neighbors[edgeIdx] != INVALID_EDGE ? 1 : 0;
     }
@@ -145,19 +145,43 @@ void disableEdgesKernel_node(
     }
 }
 
+struct ClusterDataReduceOp {
+    __host__ __device__
+    ClusterData operator()(const ClusterData& a, const ClusterData& b) const {
+        return {
+            a.rwSum + b.rwSum,
+            a.maxPotential > b.maxPotential ? a.maxPotential : b.maxPotential,
+            a.minPotential < b.minPotential ? a.minPotential : b.minPotential,
+            a.totalElements + b.totalElements
+        };
+    }
+};
 
-//
-// struct ClusterDataReduceOp {
-//     __host__ __device__
-//     ClusterData operator()(const ClusterData& a, const ClusterData& b) const {
-//         return {
-//             a.rwSum + b.rwSum,
-//             a.maxPotential > b.maxPotential ? a.maxPotential : b.maxPotential,
-//             a.minPotential < b.minPotential ? a.minPotential : b.minPotential,
-//             a.totalElements + b.totalElements
-//         };
-//     }
-// };
+struct ClusterDataFromLabeledNodeOp {
+    const double* dist;
+
+    __host__ __device__
+    explicit ClusterDataFromLabeledNodeOp(const double* dist) : dist(dist) {}
+
+    __host__ __device__
+    ClusterData operator()(const LabeledNode lNode) const {
+        const auto rwValue = static_cast<float>(dist[lNode.nix]);
+        return { rwValue, rwValue, rwValue, 1 };
+    }
+};
+
+struct KeepClusterFlagOp {
+    float walkThreshold;
+
+    __host__ __device__
+    explicit KeepClusterFlagOp(const float walkThreshold) : walkThreshold(walkThreshold) {}
+
+    __host__ __device__
+    label_t operator()(const ClusterData& cd) const {
+        const float clusterPotential = cd.maxPotential - cd.minPotential;
+        return (clusterPotential >= walkThreshold && cd.totalElements >= 2) ? 1 : 0;
+    }
+};
 
 struct MakeLabeledNodeOp {
     __host__ __device__
@@ -173,7 +197,7 @@ struct RangeExtractorOp {
     __host__ __device__
     RangeExtractorOp(const EdgeIx* ptr, int off) : rangesPtr(ptr), offset(off) {}
 
-    __device__
+    __host__ __device__
     EdgeIx operator()(const LabeledNode lNode) const {
         return rangesPtr[lNode.nix + offset];
     }
@@ -347,8 +371,6 @@ public:
 
 
     void computeClusterData(const double* dist) {
-        const auto extractLabel =  [] __device__ (const LabeledNode a) { return a.clusterId; };
-
         thrust::stable_sort(
             thrust::device,
             activeNodes.begin(),
@@ -356,26 +378,14 @@ public:
             LabeledNodeLabelLess()
         );
 
-        const auto iter_begin = thrust::make_transform_iterator(activeNodes.begin(), extractLabel);
+        const auto iter_begin = thrust::make_transform_iterator(activeNodes.begin(), LabelExtractor());
 
         auto value_iter = thrust::make_transform_iterator(
             activeNodes.begin(),
-            [dist] __device__ (const LabeledNode lNode) -> ClusterData {
-                const auto rwValue = static_cast<float>(dist[lNode.nix]);
-                return { rwValue, rwValue, rwValue, 1 };
-            }
+            ClusterDataFromLabeledNodeOp(dist)
         );
 
         // auto equalClusterPred = [] __device__ (const LabeledNode a, const LabeledNode b) { return a.clusterId == b.clusterId; };
-
-        auto reduceOp = [] __device__ (const ClusterData& a, const ClusterData& b) -> ClusterData {
-            return {
-                a.rwSum + b.rwSum,
-                a.maxPotential > b.maxPotential ? a.maxPotential : b.maxPotential,
-                a.minPotential < b.minPotential ? a.minPotential : b.minPotential,
-                a.totalElements + b.totalElements
-            };
-        };
 
         auto end_iters_new = thrust::reduce_by_key(
             thrust::device,
@@ -385,7 +395,7 @@ public:
             clusterLabels.begin(),
             clusterData.begin(),
             thrust::equal_to<label_t>(),
-            reduceOp
+            ClusterDataReduceOp()
         );
 
         // inspect(clusterLabels, numActiveClusters);
@@ -549,7 +559,7 @@ public:
             thrust::device,
             thrust::make_counting_iterator(0),
             numActiveNodes,
-            [sweepCutPtr, scNodeDataPtr, labeledNodesPtr, allLabelsPtr, sparsity_target, maxLabel, clusterCount] __device__ (int idx) {
+            [sweepCutPtr, scNodeDataPtr, labeledNodesPtr, allLabelsPtr, sparsity_target, maxLabel, clusterCount] __host__ __device__ (int idx) {
                 const NodeData& scNode = scNodeDataPtr[idx];
                 LabeledNode lNode = labeledNodesPtr[idx];
 
@@ -568,7 +578,7 @@ public:
                     sweepCutPtr,
                     sweepCutPtr + clusterCount,
                     lNode.clusterId,
-                    [=] __device__ (const SweepCutData& element, label_t target) {
+                    [=] __host__ __device__ (const SweepCutData& element, label_t target) {
                         return element.clusterId < target;
                     }
                 );
@@ -618,12 +628,7 @@ public:
         const NodeIx numClusters = numActiveClusters;
         const NodeIx lookupSize = numNodes;
 
-        auto shouldKeepCluster = [walk_threshold] __device__ (const ClusterData& cd) -> label_t {
-            const float clusterPotential = cd.maxPotential - cd.minPotential;
-            return (clusterPotential >= walk_threshold && cd.totalElements >= 2) ? 1 : 0;
-        };
-
-        auto keepFlags = thrust::make_transform_iterator(clusterData.begin(), shouldKeepCluster);
+        auto keepFlags = thrust::make_transform_iterator(clusterData.begin(), KeepClusterFlagOp(walk_threshold));
         const label_t numSurvivingClusters = thrust::reduce(
             thrust::device,
             keepFlags,
@@ -643,7 +648,7 @@ public:
             thrust::device,
             activeNodes.begin(),
             numActiveNodes,
-            [clusterDataPtr, uniqueLabelsPtr, labelLookupPtr, clusterNewLabelsPtr, dist, allLabelsPtr, walk_threshold, smallestLabel, numClusters, lookupSize] __device__ (LabeledNode& lNode) {
+            [clusterDataPtr, uniqueLabelsPtr, labelLookupPtr, clusterNewLabelsPtr, dist, allLabelsPtr, walk_threshold, smallestLabel, numClusters, lookupSize] __host__ __device__ (LabeledNode& lNode) {
                 const label_t label = lNode.clusterId;
 
                 if (label < 0) {
@@ -710,7 +715,7 @@ public:
             thrust::device,
             thrust::make_counting_iterator<NodeIx>(0),
             numActiveClusters,
-            [uniqueLabelsPtr, lookupPtr, lookupSize] __device__ (const NodeIx i) {
+            [uniqueLabelsPtr, lookupPtr, lookupSize] __host__ __device__ (const NodeIx i) {
                 const label_t label = uniqueLabelsPtr[i];
                 if (label >= 0 && label < lookupSize) {
                     lookupPtr[label] = static_cast<label_t>(i);
@@ -753,7 +758,7 @@ public:
 
         const auto input_iter = thrust::make_transform_iterator(
                 gm.getNeighbors().begin(),
-            [] __device__ (const NodeIx nb) { return nb == INVALID_EDGE ? 0 : 1; }
+            [] __host__ __device__ (const NodeIx nb) { return nb == INVALID_EDGE ? 0 : 1; }
         );
 
         const auto ranges_begin_iter = thrust::make_transform_iterator(

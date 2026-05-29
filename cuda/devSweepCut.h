@@ -324,7 +324,7 @@ struct CheckThreshold {
     __host__ __device__
     explicit CheckThreshold(const double threshold) : threshold(threshold) {}
 
-    __device__
+    __host__ __device__
     bool operator()(const SweepCutData& scData) const {
         return scData.sparsity < threshold;
     }
@@ -332,7 +332,7 @@ struct CheckThreshold {
 
 
 struct ExtractLabeledNodeOp {
-    __device__
+    __host__ __device__
     LabeledNode operator()(const auto& pair) const {
         return LabeledNode{
             thrust::get<0>(pair).nix,
@@ -347,7 +347,7 @@ struct ClusterDegreeExtractorOp {
     __host__ __device__
     ClusterDegreeExtractorOp(const EdgeIx* ptr) : clusterDegreesPtr(ptr) {}
 
-    __device__
+    __host__ __device__
     EdgeIx operator()(const LabeledNode lNode) const {
         return clusterDegreesPtr[lNode.nix];
     }
@@ -454,7 +454,7 @@ struct StoreSmallestLabelOp {
     __host__ __device__
     explicit StoreSmallestLabelOp(label_t* ptr) : d_smallestLabel(ptr) {}
 
-    __device__
+    __host__ __device__
     void operator()(const label_t label) const {
         *d_smallestLabel = label;
     }
