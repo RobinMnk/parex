@@ -60,6 +60,12 @@ inline uint64_t packKey(const uint32_t label, const float v) {
     return (static_cast<uint64_t>(orderedLabel) << 32) | ordered;
 }
 
+__device__
+inline uint64_t packSweepKey(const label_t label, const float v, const NodeIx nix) {
+    (void)nix;
+    return packKey(static_cast<uint32_t>(label), v);
+}
+
 // __global__
 // void lazyRandomWalkKernel(
 //         NodeIx numNodes,
@@ -142,16 +148,16 @@ void fusedRandomWalk_WarpParallel(
     }
 
     // Broadcast the uniform values to all lanes in 1 clock cycle
-    nix     = __shfl_sync(SUBMASK, nix, 0);
-    myLabel = __shfl_sync(SUBMASK, myLabel, 0);
-    start   = __shfl_sync(SUBMASK, start, 0);
-    degree  = __shfl_sync(SUBMASK, degree, 0);
+    nix     = __shfl_sync(SUBMASK, nix, 0, WARP);
+    myLabel = __shfl_sync(SUBMASK, myLabel, 0, WARP);
+    start   = __shfl_sync(SUBMASK, start, 0, WARP);
+    degree  = __shfl_sync(SUBMASK, degree, 0, WARP);
 
     const EdgeIx end = start + degree;
 
     if (myLabel < 0) {
         // These are the nodes that were just deactivated in the last iteration
-        packedKeys[warpId] = packKey(myLabel, 0);
+        packedKeys[warpId] = packSweepKey(static_cast<label_t>(myLabel), 0.0f, nix);
         return;
     }
 
@@ -172,7 +178,7 @@ void fusedRandomWalk_WarpParallel(
     // 3. Warp Reduction
     #pragma unroll
     for (int offset = WARP / 2; offset > 0; offset >>= 1) {
-        local_sum += __shfl_down_sync(SUBMASK, local_sum, offset);
+        local_sum += __shfl_down_sync(SUBMASK, local_sum, offset, WARP);
     }
 
     // 4. Finalize and Write-back (Only Lane 0)
@@ -192,7 +198,7 @@ void fusedRandomWalk_WarpParallel(
         // }
 
         // Prepare for Sweep Cut sort
-        packedKeys[warpId] = packKey(myLabel, static_cast<float>(nodeVal));
+        packedKeys[warpId] = packSweepKey(static_cast<label_t>(myLabel), static_cast<float>(nodeVal), nix);
     }
 }
 
@@ -229,7 +235,7 @@ void randomWalkStep(
 
     if (myLabel < 0) {
         // These are the nodes that were just deactivated in the last iteration
-        packedKeys[i] = packKey(myLabel, 0);
+        packedKeys[i] = packSweepKey(static_cast<label_t>(myLabel), 0.0f, nix);
         return;
     }
 
@@ -252,7 +258,7 @@ void randomWalkStep(
 
     new_dist[nix] = nodeVal;
     // Prepare for Sweep Cut sort
-    packedKeys[i] = packKey(myLabel, static_cast<float>(nodeVal));
+    packedKeys[i] = packSweepKey(static_cast<label_t>(myLabel), static_cast<float>(nodeVal), nix);
 }
 
 

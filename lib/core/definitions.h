@@ -28,6 +28,8 @@ using frac_t        = float;
 constexpr int threads = 256;
 constexpr int WARP = 32;
 constexpr int warpsPerBlock = threads / WARP;
+static_assert(WARP > 0 && WARP <= 32 && (WARP & (WARP - 1)) == 0, "WARP must be a power of two in [1, 32]");
+static_assert(threads % WARP == 0, "threads must be divisible by WARP");
 
 constexpr int WARPMASK = WARP-1;
 constexpr unsigned int BASE_SUBWARP_MASK = (WARP == 32) ? 0xFFFFFFFFU : ((1U << WARP) - 1U);

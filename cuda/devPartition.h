@@ -109,10 +109,10 @@ void disableEdgesKernel_node(
     }
 
     // Broadcast the values to all lanes
-    nix     = __shfl_sync(SUBMASK, nix, 0);
-    myLabel = __shfl_sync(SUBMASK, myLabel, 0);
-    start   = __shfl_sync(SUBMASK, start, 0);
-    degree  = __shfl_sync(SUBMASK, degree, 0);
+    nix     = __shfl_sync(SUBMASK, nix, 0, WARP);
+    myLabel = __shfl_sync(SUBMASK, myLabel, 0, WARP);
+    start   = __shfl_sync(SUBMASK, start, 0, WARP);
+    degree  = __shfl_sync(SUBMASK, degree, 0, WARP);
 
     const EdgeIx end = start + degree;
 
@@ -137,7 +137,7 @@ void disableEdgesKernel_node(
 
 #pragma unroll
     for (int offset = WARP / 2; offset > 0; offset /= 2) {
-        deg += __shfl_down_sync(SUBMASK, deg, offset);
+        deg += __shfl_down_sync(SUBMASK, deg, offset, WARP);
     }
 
     if (lane == 0) {
@@ -186,6 +186,12 @@ struct LabelExtractor {
     }
 };
 
+struct LabeledNodeLabelLess {
+    __host__ __device__
+    bool operator()(const LabeledNode& a, const LabeledNode& b) const {
+        return a.clusterId < b.clusterId;
+    }
+};
 
 class PartitionManager {
     NodeIx numNodes;
@@ -289,6 +295,10 @@ public:
         t2.start();
     }
 
+    ~PartitionManager() {
+        if (tempStorageReduce) cudaFree(tempStorageReduce);
+    }
+
 
     // void sortByKeys(cub::DoubleBuffer<uint64_t>& keys) {
     //     cub::DeviceRadixSort::SortPairs(
@@ -335,6 +345,17 @@ public:
 
 
     void computeClusterData(const double* dist) {
+        const auto extractLabel =  [] __device__ (const LabeledNode a) { return a.clusterId; };
+
+        thrust::stable_sort(
+            thrust::device,
+            activeNodes.begin(),
+            activeNodes.begin() + numActiveNodes,
+            LabeledNodeLabelLess()
+        );
+
+        const auto iter_begin = thrust::make_transform_iterator(activeNodes.begin(), extractLabel);
+
         auto value_iter = thrust::make_transform_iterator(
             activeNodes.begin(),
             [dist] __device__ (const LabeledNode lNode) -> ClusterData {
@@ -342,9 +363,6 @@ public:
                 return { rwValue, rwValue, rwValue, 1 };
             }
         );
-
-        const auto extractLabel =  [] __device__ (const LabeledNode a) { return a.clusterId; };
-        const auto iter_begin = thrust::make_transform_iterator(activeNodes.begin(), extractLabel);
 
         // auto equalClusterPred = [] __device__ (const LabeledNode a, const LabeledNode b) { return a.clusterId == b.clusterId; };
 
@@ -373,12 +391,12 @@ public:
         numActiveClusters = end_iters_new.second - clusterData.begin();
 
 
-        thrust::sort_by_key(
-            thrust::device,
-            clusterLabels.begin(),
-            clusterLabels.begin() + numActiveClusters,
-            clusterData.begin()
-        );
+        // thrust::sort_by_key(
+        //     thrust::device,
+        //     clusterLabels.begin(),
+        //     clusterLabels.begin() + numActiveClusters,
+        //     clusterData.begin()
+        // );
 
         // label_t smallestActiveLabel = clusterLabels.front();
         // std::cout << "smallestActiveLabel " << smallestActiveLabel << std::endl;
@@ -494,7 +512,7 @@ public:
 
         thrust::transform(
             input_iter,
-            input_iter + 2*gm.n,
+            input_iter + 2*gm.m,
             d_aem.begin(),
             ActiveEdgeLogic{neighbors}
         );
@@ -642,7 +660,7 @@ public:
 
                 if (clusterPotential < walk_threshold || cd.totalElements < 2) {
                     // this cluster should be deactivated
-                    const label_t updatedLabel = *smallestLabel - label - 1;
+                    const label_t updatedLabel = *smallestLabel - index - 1;
                     // printf("Deactivating cluster: %d -> %d \t smallest: %d\n", lNode.clusterId, updatedLabel, *smallestLabel);
                     lNode.clusterId = updatedLabel;
                     allLabelsPtr[lNode.nix] = updatedLabel;

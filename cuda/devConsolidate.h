@@ -77,11 +77,11 @@ void linkEdges_kernel_nodeView(
     }
 
     // Broadcast the uniform values to all lanes
-    nix     = __shfl_sync(SUBMASK, nix, 0);
-    myLabel = __shfl_sync(SUBMASK, myLabel, 0);
-    start   = __shfl_sync(SUBMASK, start, 0);
-    degree  = __shfl_sync(SUBMASK, degree, 0);
-    myParent = __shfl_sync(SUBMASK, myParent, 0);
+    nix     = __shfl_sync(SUBMASK, nix, 0, WARP);
+    myLabel = __shfl_sync(SUBMASK, myLabel, 0, WARP);
+    start   = __shfl_sync(SUBMASK, start, 0, WARP);
+    degree  = __shfl_sync(SUBMASK, degree, 0, WARP);
+    myParent = __shfl_sync(SUBMASK, myParent, 0, WARP);
 
     const EdgeIx end = start + degree;
 

@@ -55,11 +55,11 @@ void nodeDiffKernel_Sparse_WarpParallel(
     }
 
     // Broadcast the uniform values to all lanes in 1 clock cycle
-    nix     = __shfl_sync(SUBMASK, nix, 0);
-    myLabel = __shfl_sync(SUBMASK, myLabel, 0);
-    start   = __shfl_sync(SUBMASK, start, 0);
-    degree  = __shfl_sync(SUBMASK, degree, 0);
-    myKey   = __shfl_sync(SUBMASK, myKey, 0);
+    nix     = __shfl_sync(SUBMASK, nix, 0, WARP);
+    myLabel = __shfl_sync(SUBMASK, myLabel, 0, WARP);
+    start   = __shfl_sync(SUBMASK, start, 0, WARP);
+    degree  = __shfl_sync(SUBMASK, degree, 0, WARP);
+    myKey   = __shfl_sync(SUBMASK, myKey, 0, WARP);
 
     const EdgeIx end = start + degree;
 
@@ -78,7 +78,7 @@ void nodeDiffKernel_Sparse_WarpParallel(
         const label_t nbLabel   = __ldg(&labels[nb]);
         const double nbRwValue  = __ldg(&dist[nb]);
         // re-computing the key from scratch is much faster than trying to find and load the value from global memory
-        const uint64_t nbKey = packKey(nbLabel, static_cast<float>(nbRwValue));
+        const uint64_t nbKey = packSweepKey(nbLabel, static_cast<float>(nbRwValue), nb);
 
         if (nbLabel != myLabel) {
             printf("ERROR: this edge should have been invalidated: %d -> %d [eix: %d]\n", nix, nb, j);
@@ -86,9 +86,9 @@ void nodeDiffKernel_Sparse_WarpParallel(
 
         bool isBefore;
         if (nbKey != myKey) {
-            isBefore = (nbKey < myKey);
+            isBefore = nbKey < myKey;
         } else {
-            isBefore = (nb < nix); // TODO: I think this is not entirely correct (should compare warpIds)
+            isBefore = nb < nix;
         }
 
         nodeContribution += isBefore ? -1 : 1;
@@ -100,7 +100,7 @@ void nodeDiffKernel_Sparse_WarpParallel(
 
     #pragma unroll
     for (int offset = WARP / 2; offset > 0; offset >>= 1)
-        nodeContribution += __shfl_down_sync(SUBMASK, nodeContribution, offset);
+        nodeContribution += __shfl_down_sync(SUBMASK, nodeContribution, offset, WARP);
 
     if (lane == 0) {
         nodeData[warpId].nix                = nix;
@@ -243,10 +243,15 @@ public:
         sweepCutsBuffer(n)
     {
         cudaMalloc(&d_smallestLabel, sizeof(label_t));
+        constexpr label_t initSmallestLabel = std::numeric_limits<label_t>::max();
+        cudaMemcpy(d_smallestLabel, &initSmallestLabel, sizeof(label_t), cudaMemcpyHostToDevice);
         initializeCUB(n);
     }
 
     ~SweepCutManager() {
+        if (d_temp_storage) {
+            cudaFree(d_temp_storage);
+        }
         if (d_smallestLabel) {
             cudaFree(d_smallestLabel);
         }
@@ -254,6 +259,10 @@ public:
 
     thrust::device_vector<SweepCutData>& getSweepCuts() {
         return sweepCuts;
+    }
+
+    thrust::device_vector<SweepCutData>& getAllSweepCuts() {
+        return sweepCutsBuffer;
     }
 
     void compute(GraphManager& gm, PartitionManager& pm, const double* dist);
@@ -412,11 +421,11 @@ void SweepCutManager::print(const double* dist) {
     fflush(stdout);
 }
 
-struct UpdateSmallestLabelOp {
+struct StoreSmallestLabelOp {
     label_t* d_smallestLabel;
 
     __host__ __device__
-    UpdateSmallestLabelOp(label_t* ptr) : d_smallestLabel(ptr) {}
+    explicit StoreSmallestLabelOp(label_t* ptr) : d_smallestLabel(ptr) {}
 
     __device__
     void operator()(const label_t label) const {
@@ -496,7 +505,7 @@ inline void SweepCutManager::prepare_nodes(GraphManager& gm, PartitionManager& p
             thrust::device,
             allLabels,
             1,
-            UpdateSmallestLabelOp(d_smallestLabel)
+            StoreSmallestLabelOp(d_smallestLabel)
         );
     }
 

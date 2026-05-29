@@ -29,7 +29,6 @@ target_compile_options(ParexLib INTERFACE
         $<$<CONFIG:Release>:
         -Xcompiler=/O2               # MSVC's equivalent to -O3 for the host
         -O3                          # Optimization for device code
-        -arch=sm_86
         --use_fast_math
         -Xptxas=-O3,-v               # Note the '=' for parameter passing
         -lineinfo

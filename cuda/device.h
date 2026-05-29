@@ -174,7 +174,7 @@ struct CudaDeviceManager::Impl {
         std::vector<label_t> clusterIds(numActiveClusters);
         std::vector<SweepCutData> cuts(numActiveClusters);
         thrust::copy(pt->getUniqueActiveLabels().begin(), pt->getUniqueActiveLabels().begin() + numActiveClusters, clusterIds.begin());
-        thrust::copy(sc->getSweepCuts().begin(), sc->getSweepCuts().begin() + numActiveClusters, cuts.begin());
+        thrust::copy(sc->getAllSweepCuts().begin(), sc->getAllSweepCuts().begin() + numActiveClusters, cuts.begin());
         return {clusterIds, cuts};
     }
 
