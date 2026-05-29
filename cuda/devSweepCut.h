@@ -34,7 +34,9 @@ void nodeDiffKernel_Sparse_WarpParallel(
     const unsigned int lane   = threadIdx.x & WARPMASK;
     if (warpId >= numActiveNodes) return;
 
-    const unsigned int SUBMASK = BASE_SUBWARP_MASK << (threadIdx.x & ~WARPMASK);
+    const unsigned physicalLane = threadIdx.x & 31;
+    const unsigned subwarpBase = physicalLane & ~(WARP - 1);
+    const unsigned SUBMASK = WARP == 32 ? 0xffffffffu : (((1u << WARP) - 1u) << subwarpBase);
 
     NodeIx nix = 0;
     uint64_t myKey = 0;
@@ -417,10 +419,8 @@ struct UpdateSmallestLabelOp {
     UpdateSmallestLabelOp(label_t* ptr) : d_smallestLabel(ptr) {}
 
     __device__
-    void operator()(const label_t candidateLabel) const {
-        if (candidateLabel < *d_smallestLabel) {
-            *d_smallestLabel = candidateLabel;
-        }
+    void operator()(const label_t label) const {
+        *d_smallestLabel = label;
     }
 };
 
@@ -491,13 +491,14 @@ inline void SweepCutManager::prepare_nodes(GraphManager& gm, PartitionManager& p
     // printf("\n");
     // fflush(stdout);
 
-
-    thrust::for_each_n(
-        thrust::device,
-        allLabels,
-        1,
-        UpdateSmallestLabelOp(d_smallestLabel)
-    );
+    if (pm.numActiveNodes > 0) {
+        thrust::for_each_n(
+            thrust::device,
+            allLabels,
+            1,
+            UpdateSmallestLabelOp(d_smallestLabel)
+        );
+    }
 
     // this now contains only labels of active nodes
     auto activeLabels = thrust::lower_bound(

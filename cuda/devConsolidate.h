@@ -58,7 +58,9 @@ void linkEdges_kernel_nodeView(
     const size_t lane   = threadIdx.x & WARPMASK;
     if (warpId >= numActiveNodes) return;
 
-    const unsigned int SUBMASK = BASE_SUBWARP_MASK << (threadIdx.x & ~WARPMASK);
+    const unsigned physicalLane = threadIdx.x & 31;
+    const unsigned subwarpBase = physicalLane & ~(WARP - 1);
+    const unsigned SUBMASK = WARP == 32 ? 0xffffffffu : (((1u << WARP) - 1u) << subwarpBase);
 
     NodeIx nix = 0, myParent = 0;
     label_t myLabel = 0;

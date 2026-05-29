@@ -91,7 +91,9 @@ void disableEdgesKernel_node(
     const size_t lane   = threadIdx.x & WARPMASK;
     if (warpId >= numActiveNodes) return;
 
-    const unsigned int SUBMASK = BASE_SUBWARP_MASK << (threadIdx.x & ~WARPMASK);
+    const unsigned physicalLane = threadIdx.x & 31;
+    const unsigned subwarpBase = physicalLane & ~(WARP - 1);
+    const unsigned SUBMASK = WARP == 32 ? 0xffffffffu : (((1u << WARP) - 1u) << subwarpBase);
 
     NodeIx nix = 0;
     label_t myLabel = 0;
@@ -492,7 +494,7 @@ public:
 
         thrust::transform(
             input_iter,
-            input_iter + numNodes,
+            input_iter + 2*gm.n,
             d_aem.begin(),
             ActiveEdgeLogic{neighbors}
         );

@@ -124,7 +124,9 @@ void fusedRandomWalk_WarpParallel(
     const size_t lane   = threadIdx.x & WARPMASK;
     if (warpId >= numNodes) return;
 
-    const unsigned int SUBMASK = BASE_SUBWARP_MASK << (threadIdx.x & ~WARPMASK);
+    const unsigned physicalLane = threadIdx.x & 31;
+    const unsigned subwarpBase = physicalLane & ~(WARP - 1);
+    const unsigned SUBMASK = WARP == 32 ? 0xffffffffu : (((1u << WARP) - 1u) << subwarpBase);
 
     NodeIx nix = 0;
     int64_t myLabel = 0;
